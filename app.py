@@ -38,16 +38,18 @@ def index():
     return "Servidor online! Envie POST para /evento e veja /historico"
 
 @app.route("/evento", methods=["POST"])
+@app.route("/evento", methods=["POST"])
 def receber():
     dados = request.json
     evento = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object"),
-        "descricao": dados.get("description")
+        "descricao": dados.get("description").replace("\n", "<br>")
     }
     eventos.insert(0, evento)
     return jsonify({"ok": True})
+
 
 @app.route("/historico")
 def historico():
