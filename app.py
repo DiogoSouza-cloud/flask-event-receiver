@@ -21,7 +21,8 @@ HTML_TEMPLATE = '''
 <body>
     <h1>📡 Eventos Recebidos</h1>
     <form method="get">
-        <input type="text" name="filtro" placeholder="Filtrar por palavra-chave" value="{{ filtro }}">
+        <input type="text" name="filtro" placeholder="Palavra-chave" value="{{ filtro }}">
+        <input type="date" name="data" value="{{ data }}">
         <button type="submit">Buscar</button>
     </form>
     {% for e in eventos %}
@@ -48,7 +49,7 @@ def receber():
     evento = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "status": "alerta" if dados.get("detected") else "ok",
-        "objeto": dados.get("object"),
+        "objeto": dados.get("object", ""),
         "descricao": dados.get("description", "").replace("\n", "<br>")
     }
     eventos.insert(0, evento)
@@ -57,11 +58,15 @@ def receber():
 @app.route("/historico")
 def historico():
     filtro = request.args.get("filtro", "").lower()
+    data = request.args.get("data", "")
+    filtrados = eventos
+
     if filtro:
-        filtrados = [e for e in eventos if filtro in e["objeto"].lower() or filtro in e["descricao"].lower()]
-    else:
-        filtrados = eventos
-    return render_template_string(HTML_TEMPLATE, eventos=filtrados[:100], filtro=filtro)
+        filtrados = [e for e in filtrados if filtro in e["objeto"].lower() or filtro in e["descricao"].lower()]
+    if data:
+        filtrados = [e for e in filtrados if e["timestamp"].startswith(data)]
+
+    return render_template_string(HTML_TEMPLATE, eventos=filtrados[:100], filtro=filtro, data=data)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
