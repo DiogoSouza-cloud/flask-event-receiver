@@ -1,8 +1,20 @@
 from flask import Flask, request, jsonify, render_template_string
 from datetime import datetime
+import json
+import os
 
 app = Flask(__name__)
-eventos = []
+ARQUIVO_EVENTOS = "eventos_local.json"
+
+if os.path.exists(ARQUIVO_EVENTOS):
+    with open(ARQUIVO_EVENTOS, "r", encoding="utf-8") as f:
+        eventos = json.load(f)
+else:
+    eventos = []
+
+def salvar_eventos():
+    with open(ARQUIVO_EVENTOS, "w", encoding="utf-8") as f:
+        json.dump(eventos, f, ensure_ascii=False, indent=2)
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -19,7 +31,7 @@ HTML_TEMPLATE = '''
     </style>
 </head>
 <body>
-    <h1>📡 Eventos Recebidos</h1>
+    <h1>📡 Eventos Recebidos (LOCAL)</h1>
     <form method="get">
         <input type="text" name="filtro" placeholder="Palavra-chave" value="{{ filtro }}">
         <input type="date" name="data" value="{{ data }}">
@@ -41,7 +53,7 @@ HTML_TEMPLATE = '''
 
 @app.route("/")
 def index():
-    return "Servidor online! Envie POST para /evento e veja /historico"
+    return "Servidor online local! Envie POST para /evento e veja /historico"
 
 @app.route("/evento", methods=["POST"])
 def receber():
@@ -53,6 +65,7 @@ def receber():
         "descricao": dados.get("description", "").replace("\n", "<br>")
     }
     eventos.insert(0, evento)
+    salvar_eventos()
     return jsonify({"ok": True})
 
 @app.route("/historico")
@@ -69,4 +82,4 @@ def historico():
     return render_template_string(HTML_TEMPLATE, eventos=filtrados[:100], filtro=filtro, data=data)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="127.0.0.1", port=5000, debug=True)
