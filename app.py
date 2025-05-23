@@ -3,11 +3,11 @@ from datetime import datetime
 import mysql.connector
 
 DB_CONFIG = {
-    "host": "diogoguitarras.pt",
+    "host": "vtigerbrmais.com.br",
     "port": 3306,
-    "user": "diogogu1_eventos",
-    "password": "L7TcKB}{%5H;",
-    "database": "diogogu1_eventos"
+    "user": "vtigerbr_eventos",
+    "password": "M@landr0",
+    "database": "vtigerbr_eventos"
 }
 
 app = Flask(__name__)
