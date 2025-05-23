@@ -3,7 +3,7 @@ from datetime import datetime
 import mysql.connector
 
 DB_CONFIG = {
-    "host": "184.107.85.52",
+    "host": "certifiqueonline.com",
     "port": 3306,
     "user": "certifiq_eventos",
     "password": "M@landr0@#@#",
