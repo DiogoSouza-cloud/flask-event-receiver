@@ -118,5 +118,14 @@ def historico():
     eventos = buscar_eventos(filtro, data)
     return render_template_string(HTML_TEMPLATE, eventos=eventos, filtro=filtro, data=data)
 
+@app.route("/historico_ia")
+def historico_ia():
+    filtro = request.args.get("filtro", "")
+    data = request.args.get("data", "")
+    eventos = buscar_eventos(filtro, data)
+    # Reutiliza o mesmo HTML, apenas muda o título da página
+    html = HTML_TEMPLATE.replace("📡 Eventos Recebidos (Banco MySQL)", "🤖 Histórico IA Local")
+    return render_template_string(html, eventos=eventos, filtro=filtro, data=data)
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
