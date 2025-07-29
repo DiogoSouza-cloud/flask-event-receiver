@@ -33,7 +33,7 @@ HTML_TEMPLATE = """
             <strong>Descrição:</strong> {{ e.descricao|safe }}<br>
             {% if e.imagem %}
                 <strong>Imagem:</strong><br>
-                <img src="data:image/jpeg;base64,{{ e.imagem }}">
+                <img src="data:image/jpeg;base64,{{ e.imagem }}" style="max-width: 240px; height: auto;"><br>
             {% endif %}
         </div>
     {% else %}
