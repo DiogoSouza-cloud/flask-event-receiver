@@ -29,6 +29,7 @@ HTML_TEMPLATE = """
         <div class="evento {% if e.status == 'alerta' %}alerta{% endif %}">
             <strong>{{ e.timestamp }}</strong><br>
             <strong>Status:</strong> {{ e.status }}<br>
+            <strong>Identificador:</strong> {{ e.identificador }}<br>
             <strong>Objeto:</strong> {{ e.objeto }}<br>
             <strong>Descrição:</strong> {{ e.descricao|safe }}<br>
             {% if e.imagem %}
@@ -45,20 +46,38 @@ HTML_TEMPLATE = """
 
 @app.route("/")
 def index():
-    return "Servidor online! Envie POST para /evento e veja /historico"
+    return "Servidor online! Envie POST para /evento ou /resposta_ia e veja /historico"
 
 @app.route("/evento", methods=["POST"])
-def receber():
+def receber_evento():
     dados = request.json
     evento = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object", ""),
         "descricao": dados.get("description", "").replace("\n", "<br>"),
-        "imagem": dados.get("image", "")
+        "imagem": dados.get("image", ""),
+        "identificador": dados.get("identificador", "desconhecido")
     }
     eventos.insert(0, evento)
     return jsonify({"ok": True})
+
+@app.route("/resposta_ia", methods=["POST"])
+def receber_resposta_ia():
+    try:
+        dados = request.json
+        evento = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "ok",
+            "objeto": "Análise IA",
+            "descricao": dados.get("resposta", "").replace("\n", "<br>"),
+            "imagem": None,
+            "identificador": dados.get("identificador", "desconhecido")
+        }
+        eventos.insert(0, evento)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 500
 
 @app.route("/historico")
 def historico():
@@ -71,3 +90,4 @@ def historico():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
