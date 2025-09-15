@@ -198,16 +198,13 @@ def historico():
 
 @app.route("/alertas")
 def alertas():
-    raw = (request.args.get("filtro") or "Perigo").strip()  # "Perigo" ou "Sim"
+    raw = (request.args.get("filtro") or "Perigo Sim").strip()  # default: Perigo OU Sim
     data = (request.args.get("data") or "").strip()
 
-    # usa texto "Perigo"/"Sim" como filtro; nada de status
-    filtro_texto = raw if raw in ("Perigo", "Sim") else (raw if raw else None)
-
     evs = buscar_eventos(
-        filtro=filtro_texto,
+        filtro=raw,                 # múltiplos termos, OR já tratado em buscar_eventos
         data=data if data else None,
-        status=None,          # <<< status ignorado
+        status=None,                # status ignorado
         limit=500
     )
 
@@ -218,7 +215,7 @@ def alertas():
             ts = datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S")
             if ts >= limiar:
                 recentes.append(e)
-        except:
+        except Exception:
             pass
 
     return render_template_string(
@@ -228,6 +225,7 @@ def alertas():
         data=data,
         logo_url=_logo_url()
     )
+
 
 
     # janela de 60 minutos
