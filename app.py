@@ -199,7 +199,7 @@ def alertas():
     return render_template_string(
     HTML_TEMPLATE,
     eventos=recentes,
-    filtro="alertas",
+    filtro="Sim",
     data="",
     logo_url=_logo_url()
     )
