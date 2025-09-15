@@ -117,15 +117,29 @@ def logo_fallback():
     return send_file(BytesIO(img), mimetype="image/png")
 
 def _logo_url():
-    path = os.path.join("static", "logo_rowau.png")
-    if os.path.exists(path):
+    # 1) se existir em static
+    if os.path.exists(os.path.join("static", "logo_rowau.png")):
         return url_for('static', filename='logo_rowau.png')
+    # 2) se existir no root com o nome que você enviou
+    if os.path.exists("Logo Rowau Preto.png"):
+        return url_for('logo_uploaded')
+    # 3) fallback transparente
     return url_for('logo_fallback')
+
 
 # --- Rotas ---
 @app.route("/")
 def index():
     return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas"
+
+@app.route("/logo-uploaded.png")
+def logo_uploaded():
+    # arquivo que você subiu: "Logo Rowau Preto.png"
+    path = "Logo Rowau Preto.png"
+    if os.path.exists(path):
+        return send_file(path, mimetype="image/png")
+    return send_file(BytesIO(base64.b64decode(_TRANSPARENT_PNG_B64)), mimetype="image/png")
+
 
 @app.route("/evento", methods=["POST"])
 def receber_evento():
@@ -160,7 +174,14 @@ def historico():
     filtro = (request.args.get("filtro") or "").strip()
     data = (request.args.get("data") or "").strip()  # YYYY-MM-DD
     evs = buscar_eventos(filtro if filtro else None, data if data else None)
-    return render_template_string(HTML_TEMPLATE, eventos=evs, filtro=filtro, data=data, logo_url=_logo_url())
+    return render_template_string(
+    HTML_TEMPLATE,
+    eventos=evs,
+    filtro=filtro,
+    data=data,
+    logo_url=_logo_url()
+    )
+
 
 @app.route("/alertas")
 def alertas():
@@ -175,7 +196,14 @@ def alertas():
                 recentes.append(e)
         except Exception:
             pass
-    return render_template_string(HTML_TEMPLATE, eventos=recentes, filtro="alertas", data="", logo_url=_logo_url())
+    return render_template_string(
+    HTML_TEMPLATE,
+    eventos=evs,
+    filtro=filtro,
+    data=data,
+    logo_url=_logo_url()
+    )
+
 
 # --- Main ---
 if __name__ == "__main__":
