@@ -30,27 +30,36 @@ def salvar_evento(ev: dict):
         conn.execute(eventos_tb.insert().values(**ev))
 
 def buscar_eventos(filtro=None, data=None, status=None, limit=200):
-    sql = """
-    SELECT timestamp, status, objeto, descricao, imagem, identificador
-    FROM eventos
-    WHERE 1=1
-    """
+    from sqlalchemy.sql import text
+
+    base = ["SELECT timestamp, status, objeto, descricao, imagem, identificador FROM eventos WHERE 1=1"]
     params = {}
+
+    # múltiplas palavras (AND)
     if filtro:
-        sql += " AND (LOWER(objeto) LIKE :q OR LOWER(descricao) LIKE :q OR LOWER(identificador) LIKE :q)"
-        params["q"] = f"%{filtro.lower()}%"
+        termos = [t.strip() for t in filtro.split() if t.strip()]
+        for i, t in enumerate(termos):
+            k = f"q{i}"
+            base.append(f"AND (LOWER(objeto) LIKE :{k} OR LOWER(descricao) LIKE :{k} OR LOWER(identificador) LIKE :{k})")
+            params[k] = f"%{t.lower()}%"
+
     if data:
-        sql += " AND DATE(timestamp) = :d"
-        params["d"] = data  # YYYY-MM-DD
+        base.append("AND DATE(timestamp) = :d")
+        params["d"] = data
+
     if status:
-        sql += " AND status = :s"
+        base.append("AND status = :s")
         params["s"] = status
-    sql += " ORDER BY id DESC LIMIT :lim"
+
+    base.append("ORDER BY id DESC LIMIT :lim")
     params["lim"] = limit
+
     with engine.begin() as conn:
-        rows = conn.execute(text(sql), params).all()
+        rows = conn.execute(text(" ".join(base)), params).all()
+
     return [dict(timestamp=r[0], status=r[1], objeto=r[2],
                  descricao=r[3], imagem=r[4], identificador=r[5]) for r in rows]
+
 
 # --- HTML ---
 HTML_TEMPLATE = """
@@ -199,7 +208,7 @@ def alertas():
     return render_template_string(
     HTML_TEMPLATE,
     eventos=recentes,
-    filtro="Sim",
+    filtro="Sim Perigo",
     data="",
     logo_url=_logo_url()
     )
