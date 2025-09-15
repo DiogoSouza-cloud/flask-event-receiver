@@ -198,11 +198,12 @@ def alertas():
             pass
     return render_template_string(
     HTML_TEMPLATE,
-    eventos=evs,
-    filtro=filtro,
-    data=data,
+    eventos=recentes,
+    filtro="alertas",
+    data="",
     logo_url=_logo_url()
     )
+
 
 
 # --- Main ---
