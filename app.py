@@ -197,10 +197,6 @@ def historico():
 
 
 @app.route("/alertas")
-from datetime import datetime, timedelta
-from flask import request, render_template_string
-
-@app.route("/alertas")
 def alertas():
     modo = (request.args.get("filtro") or "").strip().lower()   # "perigo" ou "sim"
     data = (request.args.get("data") or "").strip()
