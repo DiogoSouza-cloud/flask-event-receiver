@@ -71,6 +71,7 @@ HTML_TEMPLATE = """
 <html>
 <head>
   <meta charset="UTF-8">
+  <script>setInterval(()=>location.reload(), 5000);</script>
   <title>Eventos Recebidos</title>
   <style>
     body { font-family: Arial, sans-serif; margin:0; background:#f4f4f4; }
@@ -138,7 +139,13 @@ def _logo_url():
         return url_for('logo_uploaded')
     # 3) fallback transparente
     return url_for('logo_fallback')
-
+ 
+@app.after_request
+def no_cache(resp):
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 # --- Rotas ---
 @app.route("/")
