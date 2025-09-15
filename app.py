@@ -197,34 +197,61 @@ def historico():
 
 
 @app.route("/alertas")
+from datetime import datetime, timedelta
+from flask import request, render_template_string
+
+@app.route("/alertas")
 def alertas():
-    import re
-    raw = (request.args.get("filtro") or "").strip()
+    modo = (request.args.get("filtro") or "").strip().lower()   # "perigo" ou "sim"
     data = (request.args.get("data") or "").strip()
 
-    # tokens por espaço ou vírgula
-    tokens = [t.lower() for t in re.split(r"[,\s]+", raw) if t.strip()]
-
-    # mapear presets
-    status_tokens = {t for t in tokens if t in ("sim", "perigo")}
-    if status_tokens == {"sim"}:
-        status = "ok"
-    elif status_tokens == {"perigo"}:
-        status = "alerta"
+    if modo == "perigo":
+        # YOLO: status alerta
+        evs = buscar_eventos(
+            filtro=None,
+            data=data if data else None,
+            status="alerta",
+            limit=500
+        )
+    elif modo == "sim":
+        # LLaVA: objeto "Análise IA" e descrição contendo "sim"
+        evs = buscar_eventos(
+            filtro=None,
+            data=data if data else None,
+            status=None,
+            limit=500
+        )
+        evs = [e for e in evs
+               if (e.get("objeto") == "Análise IA")
+               and ("sim" in (e.get("descricao") or "").lower())]
     else:
-        # nenhum ou ambos -> sem filtro de status
-        status = None
+        # sem filtro específico
+        evs = buscar_eventos(
+            filtro=None,
+            data=data if data else None,
+            status=None,
+            limit=500
+        )
 
-    # termos de texto restantes (OR dentro de buscar_eventos)
-    termos = [t for t in tokens if t not in ("sim", "perigo")]
-    filtro_texto = " ".join(termos) if termos else None
+    # janela de 60 minutos
+    limiar = datetime.now() - timedelta(minutes=60)
+    recentes = []
+    for e in evs:
+        try:
+            ts = datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S")
+            if ts >= limiar:
+                recentes.append(e)
+        except Exception:
+            pass
 
-    evs = buscar_eventos(
-        filtro=filtro_texto,
-        data=data if data else None,
-        status=status,
-        limit=500
+    return render_template_string(
+        HTML_TEMPLATE,
+        eventos=recentes,
+        filtro=request.args.get("filtro", ""),
+        data=data,
+        logo_url=_logo_url()
     )
+
 
     # manter janela de 60min só quando for alerta/perigo selecionado
     if status == "alerta" or ("perigo" in status_tokens and "sim" not in status_tokens):
