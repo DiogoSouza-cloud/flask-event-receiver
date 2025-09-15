@@ -198,36 +198,37 @@ def historico():
 
 @app.route("/alertas")
 def alertas():
-    modo = (request.args.get("filtro") or "").strip().lower()   # "perigo" ou "sim"
+    raw = (request.args.get("filtro") or "Perigo").strip()  # "Perigo" ou "Sim"
     data = (request.args.get("data") or "").strip()
 
-    if modo == "perigo":
-        # YOLO: status alerta
-        evs = buscar_eventos(
-            filtro=None,
-            data=data if data else None,
-            status="alerta",
-            limit=500
-        )
-    elif modo == "sim":
-        # LLaVA: objeto "Análise IA" e descrição contendo "sim"
-        evs = buscar_eventos(
-            filtro=None,
-            data=data if data else None,
-            status=None,
-            limit=500
-        )
-        evs = [e for e in evs
-               if (e.get("objeto") == "Análise IA")
-               and ("sim" in (e.get("descricao") or "").lower())]
-    else:
-        # sem filtro específico
-        evs = buscar_eventos(
-            filtro=None,
-            data=data if data else None,
-            status=None,
-            limit=500
-        )
+    # usa texto "Perigo"/"Sim" como filtro; nada de status
+    filtro_texto = raw if raw in ("Perigo", "Sim") else (raw if raw else None)
+
+    evs = buscar_eventos(
+        filtro=filtro_texto,
+        data=data if data else None,
+        status=None,          # <<< status ignorado
+        limit=500
+    )
+
+    limiar = datetime.now() - timedelta(minutes=60)
+    recentes = []
+    for e in evs:
+        try:
+            ts = datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S")
+            if ts >= limiar:
+                recentes.append(e)
+        except:
+            pass
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        eventos=recentes,
+        filtro=raw,
+        data=data,
+        logo_url=_logo_url()
+    )
+
 
     # janela de 60 minutos
     limiar = datetime.now() - timedelta(minutes=60)
