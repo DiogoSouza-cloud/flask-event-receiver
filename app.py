@@ -32,33 +32,37 @@ def salvar_evento(ev: dict):
 def buscar_eventos(filtro=None, data=None, status=None, limit=200):
     from sqlalchemy.sql import text
 
-    base = ["SELECT timestamp, status, objeto, descricao, imagem, identificador FROM eventos WHERE 1=1"]
+    sql = ["SELECT timestamp, status, objeto, descricao, imagem, identificador FROM eventos WHERE 1=1"]
     params = {}
 
-    # múltiplas palavras (AND)
+    # múltiplas palavras -> OR (qualquer termo casa)
     if filtro:
         termos = [t.strip() for t in filtro.split() if t.strip()]
-        for i, t in enumerate(termos):
-            k = f"q{i}"
-            base.append(f"AND (LOWER(objeto) LIKE :{k} OR LOWER(descricao) LIKE :{k} OR LOWER(identificador) LIKE :{k})")
-            params[k] = f"%{t.lower()}%"
+        if termos:
+            bloco_or = []
+            for i, t in enumerate(termos):
+                k = f"q{i}"
+                bloco_or.append(f"(LOWER(objeto) LIKE :{k} OR LOWER(descricao) LIKE :{k} OR LOWER(identificador) LIKE :{k})")
+                params[k] = f"%{t.lower()}%"
+            sql.append("AND (" + " OR ".join(bloco_or) + ")")
 
     if data:
-        base.append("AND DATE(timestamp) = :d")
-        params["d"] = data
+        sql.append("AND DATE(timestamp) = :d")
+        params["d"] = data  # YYYY-MM-DD
 
     if status:
-        base.append("AND status = :s")
+        sql.append("AND status = :s")
         params["s"] = status
 
-    base.append("ORDER BY id DESC LIMIT :lim")
+    sql.append("ORDER BY id DESC LIMIT :lim")
     params["lim"] = limit
 
     with engine.begin() as conn:
-        rows = conn.execute(text(" ".join(base)), params).all()
+        rows = conn.execute(text(" ".join(sql)), params).all()
 
     return [dict(timestamp=r[0], status=r[1], objeto=r[2],
                  descricao=r[3], imagem=r[4], identificador=r[5]) for r in rows]
+
 
 
 # --- HTML ---
