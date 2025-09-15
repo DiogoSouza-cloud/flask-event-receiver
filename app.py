@@ -198,24 +198,55 @@ def historico():
 
 @app.route("/alertas")
 def alertas():
-    # apenas alertas dos últimos 60 minutos
-    evs = buscar_eventos(status="alerta", limit=500)
-    limiar = datetime.now() - timedelta(minutes=60)
-    recentes = []
-    for e in evs:
-        try:
-            ts = datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S")
-            if ts >= limiar:
-                recentes.append(e)
-        except Exception:
-            pass
-    return render_template_string(
-    HTML_TEMPLATE,
-    eventos=recentes,
-    filtro="Sim Perigo",
-    data="",
-    logo_url=_logo_url()
+    import re
+    raw = (request.args.get("filtro") or "").strip()
+    data = (request.args.get("data") or "").strip()
+
+    # tokens por espaço ou vírgula
+    tokens = [t.lower() for t in re.split(r"[,\s]+", raw) if t.strip()]
+
+    # mapear presets
+    status_tokens = {t for t in tokens if t in ("sim", "perigo")}
+    if status_tokens == {"sim"}:
+        status = "ok"
+    elif status_tokens == {"perigo"}:
+        status = "alerta"
+    else:
+        # nenhum ou ambos -> sem filtro de status
+        status = None
+
+    # termos de texto restantes (OR dentro de buscar_eventos)
+    termos = [t for t in tokens if t not in ("sim", "perigo")]
+    filtro_texto = " ".join(termos) if termos else None
+
+    evs = buscar_eventos(
+        filtro=filtro_texto,
+        data=data if data else None,
+        status=status,
+        limit=500
     )
+
+    # manter janela de 60min só quando for alerta/perigo selecionado
+    if status == "alerta" or ("perigo" in status_tokens and "sim" not in status_tokens):
+        limiar = datetime.now() - timedelta(minutes=60)
+        kept = []
+        for e in evs:
+            try:
+                ts = datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S")
+                if ts >= limiar:
+                    kept.append(e)
+            except Exception:
+                pass
+        evs = kept
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        eventos=evs,
+        filtro=raw,
+        data=data,
+        logo_url=_logo_url()
+    )
+
 
 
 
