@@ -74,24 +74,24 @@ HTML_TEMPLATE = """
   <title>Eventos Recebidos</title>
   <style>
     body { font-family: Arial, sans-serif; margin:0; background:#f4f4f4; }
-    header { background:#fff; display:flex; align-items:center; gap:16px; padding:10px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
-    header img { height:48px; }
+    header { background:#fff; display:flex; align-items:center; justify-content:space-between;
+             padding:10px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+    .head-left { display:flex; align-items:center; gap:16px; }
+    .logo-rowau { height:48px; }
+    .logo-iaprotect { height:42px; }
     .wrap { padding:24px 40px; }
-    form { margin-bottom: 16px; }
-    .evento { background:#fff; padding:15px; margin:10px 0; border-left:5px solid #007bff; }
-    .alerta { border-color:red; }
-    img.ev { max-width:400px; margin-top:10px; border:1px solid #ccc; }
-    .brand-center { background:#fff; text-align:center; padding:8px 0; box-shadow:0 1px 3px rgba(0,0,0,.05); }
-    .brand-center img { height:42px; }
+    /* resto igual */
   </style>
 </head>
 <body>
   <header>
-    <img src="{{ logo_url }}" alt="Rowau">
-    <h1 style="margin:0;">📡 Eventos Recebidos</h1>
+    <div class="head-left">
+      <img src="{{ logo_url }}" class="logo-rowau" alt="Rowau">
+      <h1 style="margin:0;">📡 Eventos Recebidos</h1>
+    </div>
+    <img src="{{ iaprotect_url }}" class="logo-iaprotect" alt="IAprotect">
   </header>
 
-  <div class="brand-center">
     <img src="{{ iaprotect_url }}" alt="IAprotect">
   </div>
 
