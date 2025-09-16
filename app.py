@@ -1,54 +1,55 @@
 import os
+import base64
+from io import BytesIO
 from datetime import datetime, timedelta
+
 from flask import Flask, request, jsonify, render_template_string, url_for, send_file
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
 from sqlalchemy.sql import text
-from io import BytesIO
-import base64
 
-# --- Config DB (Postgres no Render via env; SQLite local como fallback) ---
+# --- DB (Postgres via DATABASE_URL; fallback SQLite local) ---
 DB_URL = os.getenv("DATABASE_URL", "sqlite:///eventos.db")
 engine = create_engine(DB_URL, pool_pre_ping=True, future=True)
 md = MetaData()
 eventos_tb = Table(
     "eventos", md,
     Column("id", Integer, primary_key=True),
-    Column("timestamp", Text),        # ISO string
+    Column("timestamp", Text),
     Column("status", Text),
     Column("objeto", Text),
-    Column("descricao", Text),        # com <br>
-    Column("imagem", Text),           # base64 opcional
-    Column("identificador", Text),    # cliente/câmera
+    Column("descricao", Text),
+    Column("imagem", Text),
+    Column("identificador", Text),
 )
 
 def init_db():
     md.create_all(engine)
-    os.makedirs("static", exist_ok=True)  # garante pasta para o logo
+    os.makedirs("static", exist_ok=True)
 
 def salvar_evento(ev: dict):
     with engine.begin() as conn:
         conn.execute(eventos_tb.insert().values(**ev))
 
 def buscar_eventos(filtro=None, data=None, status=None, limit=200):
-    from sqlalchemy.sql import text
-
     sql = ["SELECT timestamp, status, objeto, descricao, imagem, identificador FROM eventos WHERE 1=1"]
     params = {}
 
-    # múltiplas palavras -> OR (qualquer termo casa)
+    # múltiplas palavras -> OR
     if filtro:
         termos = [t.strip() for t in filtro.split() if t.strip()]
         if termos:
             bloco_or = []
             for i, t in enumerate(termos):
                 k = f"q{i}"
-                bloco_or.append(f"(LOWER(objeto) LIKE :{k} OR LOWER(descricao) LIKE :{k} OR LOWER(identificador) LIKE :{k})")
+                bloco_or.append(
+                    f"(LOWER(objeto) LIKE :{k} OR LOWER(descricao) LIKE :{k} OR LOWER(identificador) LIKE :{k})"
+                )
                 params[k] = f"%{t.lower()}%"
             sql.append("AND (" + " OR ".join(bloco_or) + ")")
 
     if data:
         sql.append("AND DATE(timestamp) = :d")
-        params["d"] = data  # YYYY-MM-DD
+        params["d"] = data
 
     if status:
         sql.append("AND status = :s")
@@ -62,8 +63,6 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=200):
 
     return [dict(timestamp=r[0], status=r[1], objeto=r[2],
                  descricao=r[3], imagem=r[4], identificador=r[5]) for r in rows]
-
-
 
 # --- HTML ---
 HTML_TEMPLATE = """
@@ -88,14 +87,13 @@ HTML_TEMPLATE = """
 </head>
 <body>
   <header>
-  <img src="{{ logo_url }}" alt="Rowau">
-  <h1 style="margin:0;">📡 Eventos Recebidos</h1>
-</header>
+    <img src="{{ logo_url }}" alt="Rowau">
+    <h1 style="margin:0;">📡 Eventos Recebidos</h1>
+  </header>
 
   <div class="brand-center">
     <img src="{{ iaprotect_url }}" alt="IAprotect">
   </div>
-
 
   <div class="wrap">
     <form method="get">
@@ -126,10 +124,9 @@ HTML_TEMPLATE = """
 
 app = Flask(__name__)
 
-# --- Fallback do logo: PNG transparente 1x1 ---
+# --- Fallback PNG 1x1 ---
 _TRANSPARENT_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMA"
-    "ASsJTYQAAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
 )
 
 @app.route("/logo-fallback.png")
@@ -137,22 +134,28 @@ def logo_fallback():
     img = base64.b64decode(_TRANSPARENT_PNG_B64)
     return send_file(BytesIO(img), mimetype="image/png")
 
-def _logo_url():
-    # 1) se existir em static
-    if os.path.exists(os.path.join("static", "logo_rowau.png")):
-        return url_for('static', filename='logo_rowau.png')
-    # 2) se existir no root com o nome que você enviou
-    if os.path.exists("Logo Rowau Preto.png"):
-        return url_for('logo_uploaded')
-    # 3) fallback transparente
-    return url_for('logo_fallback')
-@app.route("/iaprotect-uploaded.png")
-
-def iaprotect_uploaded():
-    path = "IAprotect.png"
+@app.route("/logo-uploaded.png")
+def logo_uploaded():
+    path = "Logo Rowau Preto.png"  # arquivo na raiz
     if os.path.exists(path):
         return send_file(path, mimetype="image/png")
-    return send_file(BytesIO(base64.b64decode(_TRANSPARENT_PNG_B64)), mimetype="image/png")
+    img = base64.b64decode(_TRANSPARENT_PNG_B64)
+    return send_file(BytesIO(img), mimetype="image/png")
+
+@app.route("/iaprotect-uploaded.png")
+def iaprotect_uploaded():
+    path = "IAprotect.png"  # arquivo na raiz
+    if os.path.exists(path):
+        return send_file(path, mimetype="image/png")
+    img = base64.b64decode(_TRANSPARENT_PNG_B64)
+    return send_file(BytesIO(img), mimetype="image/png")
+
+def _logo_url():
+    if os.path.exists(os.path.join("static", "logo_rowau.png")):
+        return url_for('static', filename='logo_rowau.png')
+    if os.path.exists("Logo Rowau Preto.png"):
+        return url_for('logo_uploaded')
+    return url_for('logo_fallback')
 
 def _iaprotect_url():
     if os.path.exists(os.path.join("static", "iaprotect.png")):
@@ -160,7 +163,6 @@ def _iaprotect_url():
     if os.path.exists("IAprotect.png"):
         return url_for('iaprotect_uploaded')
     return url_for('logo_fallback')
-
 
 @app.after_request
 def no_cache(resp):
@@ -173,15 +175,6 @@ def no_cache(resp):
 @app.route("/")
 def index():
     return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas"
-
-@app.route("/logo-uploaded.png")
-def logo_uploaded():
-    # arquivo que você subiu: "Logo Rowau Preto.png"
-    path = "Logo Rowau Preto.png"
-    if os.path.exists(path):
-        return send_file(path, mimetype="image/png")
-    return send_file(BytesIO(base64.b64decode(_TRANSPARENT_PNG_B64)), mimetype="image/png")
-
 
 @app.route("/evento", methods=["POST"])
 def receber_evento():
@@ -214,17 +207,16 @@ def receber_resposta_ia():
 @app.route("/historico")
 def historico():
     filtro = (request.args.get("filtro") or "").strip()
-    data = (request.args.get("data") or "").strip()  # YYYY-MM-DD
+    data = (request.args.get("data") or "").strip()
     evs = buscar_eventos(filtro if filtro else None, data if data else None)
     return render_template_string(
-    HTML_TEMPLATE,
-    eventos=evs,
-    filtro=filtro,
-    data=data,
-    logo_url=_logo_url()
-    iaprotect_url=_iaprotect_url()    
+        HTML_TEMPLATE,
+        eventos=evs,
+        filtro=filtro,
+        data=data,
+        logo_url=_logo_url(),
+        iaprotect_url=_iaprotect_url()
     )
-
 
 @app.route("/alertas")
 def alertas():
@@ -232,9 +224,9 @@ def alertas():
     data = (request.args.get("data") or "").strip()
 
     evs = buscar_eventos(
-        filtro=raw,                 # múltiplos termos, OR já tratado em buscar_eventos
+        filtro=raw,
         data=data if data else None,
-        status=None,                # status ignorado
+        status=None,
         limit=500
     )
 
@@ -253,57 +245,12 @@ def alertas():
         eventos=recentes,
         filtro=raw,
         data=data,
-        logo_url=_logo_url()
+        logo_url=_logo_url(),
         iaprotect_url=_iaprotect_url()
     )
-
-
-
-    # janela de 60 minutos
-    limiar = datetime.now() - timedelta(minutes=60)
-    recentes = []
-    for e in evs:
-        try:
-            ts = datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S")
-            if ts >= limiar:
-                recentes.append(e)
-        except Exception:
-            pass
-
-    return render_template_string(
-        HTML_TEMPLATE,
-        eventos=recentes,
-        filtro=request.args.get("filtro", ""),
-        data=data,
-        logo_url=_logo_url()
-    )
-
-
-    # manter janela de 60min só quando for alerta/perigo selecionado
-    if status == "alerta" or ("perigo" in status_tokens and "sim" not in status_tokens):
-        limiar = datetime.now() - timedelta(minutes=60)
-        kept = []
-        for e in evs:
-            try:
-                ts = datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S")
-                if ts >= limiar:
-                    kept.append(e)
-            except Exception:
-                pass
-        evs = kept
-
-    return render_template_string(
-        HTML_TEMPLATE,
-        eventos=evs,
-        filtro=raw,
-        data=data,
-        logo_url=_logo_url()
-    )
-
-
-
 
 # --- Main ---
 if __name__ == "__main__":
     init_db()
     app.run(host="0.0.0.0", port=10000)
+
