@@ -3,11 +3,10 @@ import base64
 from io import BytesIO
 from datetime import datetime, timedelta
 
-from flask import Flask, request, jsonify, render_template_string, url_for, send_file
+from flask import Flask, request, jsonify, render_template_string, url_for, send_file, abort
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
 from sqlalchemy.sql import text
 
-# --- DB (Postgres via DATABASE_URL; fallback SQLite local) ---
 DB_URL = os.getenv("DATABASE_URL", "sqlite:///eventos.db")
 engine = create_engine(DB_URL, pool_pre_ping=True, future=True)
 md = MetaData()
@@ -18,7 +17,7 @@ eventos_tb = Table(
     Column("status", Text),
     Column("objeto", Text),
     Column("descricao", Text),
-    Column("imagem", Text),
+    Column("imagem", Text),           # base64 (ideal é mover para armazenamento externo depois)
     Column("identificador", Text),
 )
 
@@ -30,22 +29,25 @@ def salvar_evento(ev: dict):
     with engine.begin() as conn:
         conn.execute(eventos_tb.insert().values(**ev))
 
-def buscar_eventos(filtro=None, data=None, status=None, limit=200):
-    sql = ["SELECT timestamp, status, objeto, descricao, imagem, identificador FROM eventos WHERE 1=1"]
+def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
+    # NÃO traz a coluna imagem. Calcula apenas se existe.
+    sql = [
+        "SELECT id, timestamp, status, objeto, descricao, identificador,",
+        "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img",
+        "FROM eventos WHERE 1=1",
+    ]
     params = {}
 
-    # múltiplas palavras -> OR
     if filtro:
-        termos = [t.strip() for t in filtro.split() if t.strip()]
+        termos = [t.strip() for t in filtro.replace(",", " ").split() if t.strip()]
         if termos:
-            bloco_or = []
+            or_parts = []
             for i, t in enumerate(termos):
                 k = f"q{i}"
-                bloco_or.append(
-                    f"(LOWER(objeto) LIKE :{k} OR LOWER(descricao) LIKE :{k} OR LOWER(identificador) LIKE :{k})"
-                )
-                params[k] = f"%{t.lower()}%"
-            sql.append("AND (" + " OR ".join(bloco_or) + ")")
+                like = f"%{t.lower()}%"
+                or_parts.append(f"(LOWER(objeto) LIKE :{k} OR LOWER(descricao) LIKE :{k} OR LOWER(identificador) LIKE :{k})")
+                params[k] = like
+            sql.append("AND (" + " OR ".join(or_parts) + ")")
 
     if data:
         sql.append("AND DATE(timestamp) = :d")
@@ -55,51 +57,58 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=200):
         sql.append("AND status = :s")
         params["s"] = status
 
-    sql.append("ORDER BY id DESC LIMIT :lim")
-    params["lim"] = limit
+    sql.append("ORDER BY id DESC LIMIT :lim OFFSET :off")
+    params["lim"] = int(limit)
+    params["off"] = int(offset)
 
     with engine.begin() as conn:
         rows = conn.execute(text(" ".join(sql)), params).all()
 
-    return [dict(timestamp=r[0], status=r[1], objeto=r[2],
-                 descricao=r[3], imagem=r[4], identificador=r[5]) for r in rows]
+    evs = []
+    for r in rows:
+        evs.append(dict(
+            id=r[0], timestamp=r[1], status=r[2], objeto=r[3],
+            descricao=r[4], identificador=r[5], tem_img=bool(r[6])
+        ))
+    return evs
 
-# --- HTML ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
+  <title>Eventos Recebidos</title>
   <script>
     setInterval(() => {
       const t = document.activeElement && document.activeElement.tagName;
       if (!['INPUT','TEXTAREA','SELECT'].includes(t)) location.reload();
     }, 20000);
   </script>
-
-  <title>Eventos Recebidos</title>
   <style>
     body { font-family: Arial, sans-serif; margin:0; background:#f4f4f4; }
-    header { background:#fff; display:flex; align-items:center; gap:16px; padding:10px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
-    header img { height:48px; }
-    .wrap { padding:24px 40px; }
-    form { margin-bottom: 16px; }
+    header { background:#fff; display:flex; align-items:center; justify-content:space-between;
+             padding:10px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+    .head-left { display:flex; align-items:center; gap:16px; }
+    .logo-rowau { height:38px; }
+    .logo-iaprotect { height:32px; }
+    h1 { margin:0; font-size:28px; }
+    .wrap { padding:20px 32px; }
+    form { margin-bottom: 12px; }
     .evento { background:#fff; padding:15px; margin:10px 0; border-left:5px solid #007bff; }
     .alerta { border-color:red; }
     img.ev { max-width:400px; margin-top:10px; border:1px solid #ccc; }
-    .brand-center { background:#fff; text-align:center; padding:8px 0; box-shadow:0 1px 3px rgba(0,0,0,.05); }
-    .brand-center img { height:42px; }
+    .pager { margin-top:12px; }
+    .pager a { margin-right:10px; }
   </style>
 </head>
 <body>
   <header>
-    <img src="{{ logo_url }}" alt="Rowau">
-    <h1 style="margin:0;">📡 Eventos Recebidos</h1>
+    <div class="head-left">
+      <img src="{{ logo_url }}" class="logo-rowau" alt="Rowau">
+      <h1>📡 Eventos Recebidos</h1>
+    </div>
+    <img src="{{ iaprotect_url }}" class="logo-iaprotect" alt="IAprotect">
   </header>
-
-  <div class="brand-center">
-    <img src="{{ iaprotect_url }}" alt="IAprotect">
-  </div>
 
   <div class="wrap">
     <form method="get">
@@ -115,14 +124,21 @@ HTML_TEMPLATE = """
         <strong>Identificador:</strong> {{ e.identificador }}<br>
         <strong>Objeto:</strong> {{ e.objeto }}<br>
         <strong>Descrição:</strong> {{ e.descricao|safe }}<br>
-        {% if e.imagem %}
+        {% if e.tem_img %}
           <strong>Imagem:</strong><br>
-          <img class="ev" src="data:image/jpeg;base64,{{ e.imagem }}">
+          <img class="ev" src="{{ url_for('img', ev_id=e.id) }}" loading="lazy">
         {% endif %}
       </div>
     {% else %}
       <p>Nenhum evento encontrado.</p>
     {% endfor %}
+
+    <div class="pager">
+      {% if page > 1 %}
+        <a href="?filtro={{ filtro }}&data={{ data }}&page={{ page-1 }}">◀ Anterior</a>
+      {% endif %}
+      <a href="?filtro={{ filtro }}&data={{ data }}&page={{ page+1 }}">Próxima ▶</a>
+    </div>
   </div>
 </body>
 </html>
@@ -130,31 +146,29 @@ HTML_TEMPLATE = """
 
 app = Flask(__name__)
 
-# --- Fallback PNG 1x1 ---
-_TRANSPARENT_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
-)
+# ----- logos e fallbacks -----
+_TRANSPARENT_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
 
 @app.route("/logo-fallback.png")
 def logo_fallback():
     img = base64.b64decode(_TRANSPARENT_PNG_B64)
-    return send_file(BytesIO(img), mimetype="image/png")
+    return send_file(BytesIO(img), mimetype="image/png", cache_timeout=86400)
 
 @app.route("/logo-uploaded.png")
 def logo_uploaded():
-    path = "Logo Rowau Preto.png"  # arquivo na raiz
+    path = "Logo Rowau Preto.png"
     if os.path.exists(path):
-        return send_file(path, mimetype="image/png")
+        return send_file(path, mimetype="image/png", cache_timeout=86400)
     img = base64.b64decode(_TRANSPARENT_PNG_B64)
-    return send_file(BytesIO(img), mimetype="image/png")
+    return send_file(BytesIO(img), mimetype="image/png", cache_timeout=86400)
 
 @app.route("/iaprotect-uploaded.png")
 def iaprotect_uploaded():
-    path = "IAprotect.png"  # arquivo na raiz
+    path = "IAprotect.png"
     if os.path.exists(path):
-        return send_file(path, mimetype="image/png")
+        return send_file(path, mimetype="image/png", cache_timeout=86400)
     img = base64.b64decode(_TRANSPARENT_PNG_B64)
-    return send_file(BytesIO(img), mimetype="image/png")
+    return send_file(BytesIO(img), mimetype="image/png", cache_timeout=86400)
 
 def _logo_url():
     if os.path.exists(os.path.join("static", "logo_rowau.png")):
@@ -172,12 +186,28 @@ def _iaprotect_url():
 
 @app.after_request
 def no_cache(resp):
+    # não aplicar no cache das imagens estáticas
+    if request.path.startswith(("/logo-", "/img/", "/static/")):
+        return resp
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
     return resp
 
-# --- Rotas ---
+# ----- rota para servir imagem de um evento -----
+@app.route("/img/<int:ev_id>")
+def img(ev_id: int):
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT imagem FROM eventos WHERE id=:i"), {"i": ev_id}).first()
+    if not row or not row[0]:
+        abort(404)
+    try:
+        b = base64.b64decode(row[0], validate=False)
+    except Exception:
+        abort(404)
+    return send_file(BytesIO(b), mimetype="image/jpeg", cache_timeout=3600)
+
+# ----- rotas principais -----
 @app.route("/")
 def index():
     return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas"
@@ -214,26 +244,32 @@ def receber_resposta_ia():
 def historico():
     filtro = (request.args.get("filtro") or "").strip()
     data = (request.args.get("data") or "").strip()
-    evs = buscar_eventos(filtro if filtro else None, data if data else None)
+    page = int(request.args.get("page") or 1)
+    page = max(page, 1)
+    evs = buscar_eventos(filtro if filtro else None, data if data else None, status=None, limit=50, offset=(page-1)*50)
     return render_template_string(
         HTML_TEMPLATE,
         eventos=evs,
         filtro=filtro,
         data=data,
+        page=page,
         logo_url=_logo_url(),
         iaprotect_url=_iaprotect_url()
     )
 
 @app.route("/alertas")
 def alertas():
-    raw = (request.args.get("filtro") or "Perigo Sim").strip()  # default: Perigo OU Sim
+    raw = (request.args.get("filtro") or "Perigo Sim").strip()
     data = (request.args.get("data") or "").strip()
+    page = int(request.args.get("page") or 1)
+    page = max(page, 1)
 
     evs = buscar_eventos(
         filtro=raw,
         data=data if data else None,
         status=None,
-        limit=500
+        limit=50,
+        offset=(page-1)*50
     )
 
     limiar = datetime.now() - timedelta(minutes=60)
@@ -251,14 +287,15 @@ def alertas():
         eventos=recentes,
         filtro=raw,
         data=data,
+        page=page,
         logo_url=_logo_url(),
         iaprotect_url=_iaprotect_url()
     )
 
-# --- Main ---
 if __name__ == "__main__":
     init_db()
     app.run(host="0.0.0.0", port=10000)
+
 
 
 
