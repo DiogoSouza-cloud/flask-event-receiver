@@ -92,9 +92,9 @@ HTML_TEMPLATE = """
   <h1 style="margin:0;">📡 Eventos Recebidos</h1>
 </header>
 
-<div class="brand-center">
-  <img src="{{ iaprotect_url }}" alt="IAprotect">
-</div>
+  <div class="brand-center">
+    <img src="{{ iaprotect_url }}" alt="IAprotect">
+  </div>
 
 
   <div class="wrap">
