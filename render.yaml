@@ -4,5 +4,5 @@ services:
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python app.py"
+    startCommand: gunicorn app:app --workers=1 --threads=2 --timeout=60 --worker-tmp-dir /dev/shm
     envVars: []
