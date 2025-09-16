@@ -1,3 +1,9 @@
 Flask==3.1.1
 SQLAlchemy==2.0.36
 psycopg2-binary==2.9.9
+services:
+- type: web
+  name: flask-event-receiver
+  env: python
+  buildCommand: pip install -r requirements.txt
+  startCommand: gunicorn app:app --workers=1 --threads=2 --timeout=60 --worker-tmp-dir /dev/shm
