@@ -152,23 +152,23 @@ _TRANSPARENT_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4
 @app.route("/logo-fallback.png")
 def logo_fallback():
     img = base64.b64decode(_TRANSPARENT_PNG_B64)
-    return send_file(BytesIO(img), mimetype="image/png", cache_timeout=86400)
+    return send_file(BytesIO(img), mimetype="image/png", max_age=86400)
 
 @app.route("/logo-uploaded.png")
 def logo_uploaded():
     path = "Logo Rowau Preto.png"
     if os.path.exists(path):
-        return send_file(path, mimetype="image/png", cache_timeout=86400)
+        return send_file(path, mimetype="image/png", max_age=86400)
     img = base64.b64decode(_TRANSPARENT_PNG_B64)
-    return send_file(BytesIO(img), mimetype="image/png", cache_timeout=86400)
+    return send_file(BytesIO(img), mimetype="image/png", max_age=86400)
 
 @app.route("/iaprotect-uploaded.png")
 def iaprotect_uploaded():
     path = "IAprotect.png"
     if os.path.exists(path):
-        return send_file(path, mimetype="image/png", cache_timeout=86400)
+        return send_file(path, mimetype="image/png", max_age=86400)
     img = base64.b64decode(_TRANSPARENT_PNG_B64)
-    return send_file(BytesIO(img), mimetype="image/png", cache_timeout=86400)
+    return send_file(BytesIO(img), mimetype="image/png", max_age=86400)
 
 def _logo_url():
     if os.path.exists(os.path.join("static", "logo_rowau.png")):
@@ -205,7 +205,7 @@ def img(ev_id: int):
         b = base64.b64decode(row[0], validate=False)
     except Exception:
         abort(404)
-    return send_file(BytesIO(b), mimetype="image/jpeg", cache_timeout=3600)
+    return send_file(BytesIO(b), mimetype="image/jpeg", max_age=3600)
 
 # ----- rotas principais -----
 @app.route("/")
