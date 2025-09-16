@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify, render_template_string, url_for, send
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
 from sqlalchemy.sql import text
 
-# --- DB (Postgres via DATABASE_URL; fallback SQLite local) ---
+# --------------------- DB (Postgres via env; fallback SQLite) ---------------------
 DB_URL = os.getenv("DATABASE_URL", "sqlite:///eventos.db")
 engine = create_engine(DB_URL, pool_pre_ping=True, future=True)
 md = MetaData()
@@ -49,7 +49,7 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=200):
 
     if data:
         sql.append("AND DATE(timestamp) = :d")
-        params["d"] = data
+        params["d"] = data  # YYYY-MM-DD
 
     if status:
         sql.append("AND status = :s")
@@ -64,36 +64,37 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=200):
     return [dict(timestamp=r[0], status=r[1], objeto=r[2],
                  descricao=r[3], imagem=r[4], identificador=r[5]) for r in rows]
 
-# --- HTML ---
+# --------------------- HTML ---------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <script>setInterval(()=>location.reload(), 5000);</script>
   <title>Eventos Recebidos</title>
+  <script>setInterval(()=>location.reload(), 5000);</script>
   <style>
     body { font-family: Arial, sans-serif; margin:0; background:#f4f4f4; }
     header { background:#fff; display:flex; align-items:center; justify-content:space-between;
              padding:10px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
     .head-left { display:flex; align-items:center; gap:16px; }
-    .logo-rowau { height:48px; }
-    .logo-iaprotect { height:42px; }
-    .wrap { padding:24px 40px; }
-    /* resto igual */
+    .logo-rowau { height:38px; }
+    .logo-iaprotect { height:32px; }
+    h1 { margin:0; font-size:28px; }
+    .wrap { padding:20px 32px; }
+    form { margin-bottom: 16px; }
+    .evento { background:#fff; padding:15px; margin:10px 0; border-left:5px solid #007bff; }
+    .alerta { border-color:red; }
+    img.ev { max-width:400px; margin-top:10px; border:1px solid #ccc; }
   </style>
 </head>
 <body>
   <header>
     <div class="head-left">
       <img src="{{ logo_url }}" class="logo-rowau" alt="Rowau">
-      <h1 style="margin:0;">📡 Eventos Recebidos</h1>
+      <h1>📡 Eventos Recebidos</h1>
     </div>
     <img src="{{ iaprotect_url }}" class="logo-iaprotect" alt="IAprotect">
   </header>
-
-    <img src="{{ iaprotect_url }}" alt="IAprotect">
-  </div>
 
   <div class="wrap">
     <form method="get">
@@ -124,10 +125,8 @@ HTML_TEMPLATE = """
 
 app = Flask(__name__)
 
-# --- Fallback PNG 1x1 ---
-_TRANSPARENT_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
-)
+# --------------------- Logos e fallback ---------------------
+_TRANSPARENT_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
 
 @app.route("/logo-fallback.png")
 def logo_fallback():
@@ -171,7 +170,7 @@ def no_cache(resp):
     resp.headers["Expires"] = "0"
     return resp
 
-# --- Rotas ---
+# --------------------- Rotas ---------------------
 @app.route("/")
 def index():
     return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas"
@@ -220,16 +219,18 @@ def historico():
 
 @app.route("/alertas")
 def alertas():
-    raw = (request.args.get("filtro") or "Perigo Sim").strip()  # default: Perigo OU Sim
+    # default: mostrar Perigo OU Sim (OR), ignorando status
+    raw = (request.args.get("filtro") or "Perigo Sim").strip()
     data = (request.args.get("data") or "").strip()
 
     evs = buscar_eventos(
-        filtro=raw,
+        filtro=raw,          # OR já tratado em buscar_eventos()
         data=data if data else None,
         status=None,
         limit=500
     )
 
+    # janela de 60 minutos
     limiar = datetime.now() - timedelta(minutes=60)
     recentes = []
     for e in evs:
@@ -249,8 +250,9 @@ def alertas():
         iaprotect_url=_iaprotect_url()
     )
 
-# --- Main ---
+# --------------------- Main ---------------------
 if __name__ == "__main__":
     init_db()
     app.run(host="0.0.0.0", port=10000)
+
 
