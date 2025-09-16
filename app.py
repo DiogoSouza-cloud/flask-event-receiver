@@ -70,7 +70,13 @@ HTML_TEMPLATE = """
 <html>
 <head>
   <meta charset="UTF-8">
-  <script>setInterval(()=>location.reload(), 5000);</script>
+  <script>
+    setInterval(() => {
+      const t = document.activeElement && document.activeElement.tagName;
+      if (!['INPUT','TEXTAREA','SELECT'].includes(t)) location.reload();
+    }, 20000);
+  </script>
+
   <title>Eventos Recebidos</title>
   <style>
     body { font-family: Arial, sans-serif; margin:0; background:#f4f4f4; }
