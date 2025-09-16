@@ -82,13 +82,20 @@ HTML_TEMPLATE = """
     .evento { background:#fff; padding:15px; margin:10px 0; border-left:5px solid #007bff; }
     .alerta { border-color:red; }
     img.ev { max-width:400px; margin-top:10px; border:1px solid #ccc; }
+    .brand-center { background:#fff; text-align:center; padding:8px 0; box-shadow:0 1px 3px rgba(0,0,0,.05); }
+    .brand-center img { height:42px; }
   </style>
 </head>
 <body>
   <header>
-    <img src="{{ logo_url }}" alt="Rowau">
-    <h1 style="margin:0;">📡 Eventos Recebidos</h1>
-  </header>
+  <img src="{{ logo_url }}" alt="Rowau">
+  <h1 style="margin:0;">📡 Eventos Recebidos</h1>
+</header>
+
+<div class="brand-center">
+  <img src="{{ iaprotect_url }}" alt="IAprotect">
+</div>
+
 
   <div class="wrap">
     <form method="get">
@@ -139,7 +146,22 @@ def _logo_url():
         return url_for('logo_uploaded')
     # 3) fallback transparente
     return url_for('logo_fallback')
- 
+@app.route("/iaprotect-uploaded.png")
+
+def iaprotect_uploaded():
+    path = "IAprotect.png"
+    if os.path.exists(path):
+        return send_file(path, mimetype="image/png")
+    return send_file(BytesIO(base64.b64decode(_TRANSPARENT_PNG_B64)), mimetype="image/png")
+
+def _iaprotect_url():
+    if os.path.exists(os.path.join("static", "iaprotect.png")):
+        return url_for('static', filename='iaprotect.png')
+    if os.path.exists("IAprotect.png"):
+        return url_for('iaprotect_uploaded')
+    return url_for('logo_fallback')
+
+
 @app.after_request
 def no_cache(resp):
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -200,6 +222,7 @@ def historico():
     filtro=filtro,
     data=data,
     logo_url=_logo_url()
+    iaprotect_url=_iaprotect_url()    
     )
 
 
@@ -231,6 +254,7 @@ def alertas():
         filtro=raw,
         data=data,
         logo_url=_logo_url()
+        iaprotect_url=_iaprotect_url()
     )
 
 
