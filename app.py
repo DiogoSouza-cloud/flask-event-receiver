@@ -135,7 +135,7 @@ HTML_TEMPLATE = """
   <header>
     <div class="head-left">
       <img src="{{ iaprotect_url }}" class="logo-iaprotect" alt="IAProtect">
-      <h1>Painel de Alertas</h1>
+      <h1>{{ page_title }}</h1>
     </div>
     <img src="{{ logo_url }}" class="logo-rowau" alt="ROWAU">
   </header>
@@ -165,7 +165,7 @@ HTML_TEMPLATE = """
           <!-- Se quiser exatamente como no mockup:
                <div class="kv"><b>Análise Objeto:</b> {{ e.objeto }}</div>
           -->
-          <div class="ctx"><b>Análise contextual:</b> {{ e.descricao|safe }}</div>
+          <div class="ctx"><b>Analise objeto:</b> {{ e.descricao|safe }}</div>
         </div>
       </div>
     {% else %}
