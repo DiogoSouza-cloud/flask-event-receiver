@@ -284,11 +284,12 @@ def receber_resposta_ia():
 def historico():
     filtro = (request.args.get("filtro") or "").strip()
     data = (request.args.get("data") or "").strip()
-    page = int(request.args.get("page") or 1)
-    page = max(page, 1)
-    evs = buscar_eventos(filtro if filtro else None, data if data else None, status=None, limit=50, offset=(page-1)*50)
+    page = max(int(request.args.get("page") or 1), 1)
+    evs = buscar_eventos(filtro if filtro else None, data if data else None,
+                         status=None, limit=50, offset=(page-1)*50)
     return render_template_string(
         HTML_TEMPLATE,
+        page_title="Painel Histórico",
         eventos=evs,
         filtro=filtro,
         data=data,
@@ -301,16 +302,20 @@ def historico():
 def alertas():
     raw = (request.args.get("filtro") or "Perigo Sim").strip()
     data = (request.args.get("data") or "").strip()
-    page = int(request.args.get("page") or 1)
-    page = max(page, 1)
-
-    evs = buscar_eventos(
+    page = max(int(request.args.get("page") or 1), 1)
+    evs = buscar_eventos(filtro=raw, data=data if data else None,
+                         status=None, limit=50, offset=(page-1)*50)
+    return render_template_string(
+        HTML_TEMPLATE,
+        page_title="Painel de Alertas",
+        eventos=evs,
         filtro=raw,
-        data=data if data else None,
-        status=None,
-        limit=50,
-        offset=(page-1)*50
+        data=data,
+        page=page,
+        logo_url=_logo_url(),
+        iaprotect_url=_iaprotect_url()
     )
+
 
     limiar = datetime.now() - timedelta(minutes=60)
     recentes = []
