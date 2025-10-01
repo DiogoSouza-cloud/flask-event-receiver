@@ -77,7 +77,7 @@ HTML_TEMPLATE = """
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Eventos Recebidos</title>
+  <title>Painel de Alertas</title>
   <script>
     setInterval(() => {
       const t = document.activeElement && document.activeElement.tagName;
@@ -85,18 +85,48 @@ HTML_TEMPLATE = """
     }, 20000);
   </script>
   <style>
-    body { font-family: Arial, sans-serif; margin:0; background:#f4f4f4; }
-    header { background:#fff; display:flex; align-items:center; justify-content:space-between;
-             padding:10px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
-    .head-left { display:flex; align-items:center; gap:16px; }
-    .logo-rowau { height:38px; }
-    .logo-iaprotect { height:32px; }
-    h1 { margin:0; font-size:28px; }
-    .wrap { padding:20px 32px; }
-    form { margin-bottom: 12px; }
-    .evento { background:#fff; padding:15px; margin:10px 0; border-left:5px solid #007bff; }
-    .alerta { border-color:red; }
-    img.ev { max-width:400px; margin-top:10px; border:1px solid #ccc; }
+    :root {
+      --bg: #faf6ed;
+      --card: #ffffff;
+      --ink: #1b1b1b;
+      --muted: #666;
+      --alert: #c62828;
+      --ok: #2e7d32;
+      --accent: #111;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:var(--bg); }
+    header {
+      background: var(--bg);
+      display:flex; align-items:center; justify-content:space-between;
+      padding:14px 24px; border-bottom:1px solid #e6e0d5;
+    }
+    .head-left { display:flex; align-items:center; gap:18px; }
+    .logo-iaprotect { height:30px; }
+    .logo-rowau { height:34px; }
+    h1 { margin:0; font-size:30px; font-weight:700; color:var(--accent); }
+
+    .wrap { padding:20px 28px; max-width:1100px; }
+    form { margin: 0 0 16px 0; display:flex; gap:8px; }
+    input[type="text"], input[type="date"] {
+      padding:8px 10px; border:1px solid #d9d3c6; border-radius:6px; background:#fff;
+    }
+    button { padding:8px 12px; border:1px solid #bdb6a7; background:#fff; border-radius:6px; cursor:pointer; }
+
+    .card {
+      display:grid; grid-template-columns: 200px 1fr;
+      gap:16px; align-items:start;
+      background:var(--card); padding:14px; margin:14px 0;
+      border-radius:10px; border:1px solid #e6e0d5;
+    }
+    .card.alerta { border-left:6px solid var(--alert); }
+    .thumb {
+      width:200px; height:140px; object-fit:cover; border:1px solid #ddd; border-radius:6px; background:#f5f5f5;
+    }
+    .meta { font-size:14px; color:var(--muted); margin-bottom:6px; }
+    .kv { margin:4px 0; }
+    .kv b { display:inline-block; width:160px; }
+    .ctx { margin-top:6px; line-height:1.35; }
     .pager { margin-top:12px; }
     .pager a { margin-right:10px; }
   </style>
@@ -104,10 +134,10 @@ HTML_TEMPLATE = """
 <body>
   <header>
     <div class="head-left">
-      <img src="{{ logo_url }}" class="logo-rowau" alt="Rowau">
-      <h1>📡 Eventos Recebidos</h1>
+      <img src="{{ iaprotect_url }}" class="logo-iaprotect" alt="IAProtect">
+      <h1>Painel de Alertas</h1>
     </div>
-    <img src="{{ iaprotect_url }}" class="logo-iaprotect" alt="IAprotect">
+    <img src="{{ logo_url }}" class="logo-rowau" alt="ROWAU">
   </header>
 
   <div class="wrap">
@@ -118,16 +148,25 @@ HTML_TEMPLATE = """
     </form>
 
     {% for e in eventos %}
-      <div class="evento {% if e.status == 'alerta' %}alerta{% endif %}">
-        <strong>{{ e.timestamp }}</strong><br>
-        <strong>Status:</strong> {{ e.status }}<br>
-        <strong>Identificador:</strong> {{ e.identificador }}<br>
-        <strong>Objeto:</strong> {{ e.objeto }}<br>
-        <strong>Descrição:</strong> {{ e.descricao|safe }}<br>
+      <div class="card {% if e.status == 'alerta' %}alerta{% endif %}">
         {% if e.tem_img %}
-          <strong>Imagem:</strong><br>
-          <img class="ev" src="{{ url_for('img', ev_id=e.id) }}" loading="lazy">
+          <img class="thumb" src="{{ url_for('img', ev_id=e.id) }}" loading="lazy" alt="frame do evento">
+        {% else %}
+          <div style="width:200px;height:140px" class="thumb"></div>
         {% endif %}
+
+        <div>
+          <div class="meta">{{ e.timestamp }}</div>
+
+          <div class="kv"><b>Identificador:</b> {{ e.identificador }}</div>
+          <div class="kv"><b>Status:</b> {{ e.status|capitalize }}</div>
+          <div class="kv"><b>Objeto:</b> {{ e.objeto }}</div>
+
+          <!-- Se quiser exatamente como no mockup:
+               <div class="kv"><b>Análise Objeto:</b> {{ e.objeto }}</div>
+          -->
+          <div class="ctx"><b>Análise contextual:</b> {{ e.descricao|safe }}</div>
+        </div>
       </div>
     {% else %}
       <p>Nenhum evento encontrado.</p>
@@ -143,6 +182,7 @@ HTML_TEMPLATE = """
 </body>
 </html>
 """
+
 
 app = Flask(__name__)
 
