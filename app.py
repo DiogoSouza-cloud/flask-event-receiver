@@ -39,15 +39,18 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
     params = {}
 
     if filtro:
-        termos = [t.strip() for t in filtro.replace(",", " ").split() if t.strip()]
-        if termos:
-            or_parts = []
-            for i, t in enumerate(termos):
-                k = f"q{i}"
-                like = f"%{t.lower()}%"
-                or_parts.append(f"(LOWER(objeto) LIKE :{k} OR LOWER(descricao) LIKE :{k} OR LOWER(identificador) LIKE :{k})")
-                params[k] = like
-            sql.append("AND (" + " OR ".join(or_parts) + ")")
+    termos = [t.strip() for t in filtro.replace(",", " ").split() if t.strip()]
+    if termos:
+        or_parts = []
+        for i, t in enumerate(termos):
+            k = f"q{i}"
+            # busca case-sensitive em SQLite
+            or_parts.append(
+                f"(instr(objeto, :{k}) > 0 OR instr(descricao, :{k}) > 0 OR instr(identificador, :{k}) > 0)"
+            )
+            params[k] = t
+        sql.append("AND (" + " OR ".join(or_parts) + ")")
+
 
     if data:
         sql.append("AND DATE(timestamp) = :d")
