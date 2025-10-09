@@ -39,15 +39,18 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
     params = {}
 
     if filtro:
-        termos = [t.strip() for t in filtro.replace(",", " ").split() if t.strip()]
-        if termos:
-            or_parts = []
-            for i, t in enumerate(termos):
-                k = f"q{i}"
-                like = f"%{t.lower()}%"
-                or_parts.append(f"(LOWER(objeto) LIKE :{k} OR LOWER(descricao) LIKE :{k} OR LOWER(identificador) LIKE :{k})")
-                params[k] = like
-            sql.append("AND (" + " OR ".join(or_parts) + ")")
+    termos = [t.strip() for t in filtro.replace(",", " ").split() if t.strip()]
+    if termos:
+        or_parts = []
+        for i, t in enumerate(termos):
+            k = f"q{i}"
+            # busca case-sensitive em SQLite
+            or_parts.append(
+                f"(instr(objeto, :{k}) > 0 OR instr(descricao, :{k}) > 0 OR instr(identificador, :{k}) > 0)"
+            )
+            params[k] = t
+        sql.append("AND (" + " OR ".join(or_parts) + ")")
+
 
     if data:
         sql.append("AND DATE(timestamp) = :d")
@@ -303,32 +306,32 @@ def alertas():
     raw = (request.args.get("filtro") or "Perigo Sim").strip()
     data = (request.args.get("data") or "").strip()
     page = max(int(request.args.get("page") or 1), 1)
-    evs = buscar_eventos(filtro=raw, data=data if data else None,
-                         status=None, limit=50, offset=(page-1)*50)
-    return render_template_string(
-        HTML_TEMPLATE,
-        page_title="Painel de Alertas",
-        eventos=evs,
+
+    evs = buscar_eventos(
         filtro=raw,
-        data=data,
-        page=page,
-        logo_url=_logo_url(),
-        iaprotect_url=_iaprotect_url()
+        data=data if data else None,
+        status=None,
+        limit=50,
+        offset=(page-1)*50
     )
 
-
+    # janela de 60 minutos
     limiar = datetime.now() - timedelta(minutes=60)
     recentes = []
     for e in evs:
+        ts = e.get("timestamp")
+        if not ts:
+            continue
         try:
-            ts = datetime.strptime(e["timestamp"], "%Y-%m-%d %H:%M:%S")
-            if ts >= limiar:
+            dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            if dt >= limiar:
                 recentes.append(e)
-        except Exception:
-            pass
+        except ValueError:
+            continue
 
     return render_template_string(
         HTML_TEMPLATE,
+        page_title="Painel de Alertas",
         eventos=recentes,
         filtro=raw,
         data=data,
@@ -336,6 +339,7 @@ def alertas():
         logo_url=_logo_url(),
         iaprotect_url=_iaprotect_url()
     )
+
 
 if __name__ == "__main__":
     init_db()
