@@ -2,13 +2,40 @@ import os
 import base64
 from io import BytesIO
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 from flask import Flask, request, jsonify, render_template_string, url_for, send_file, abort
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
 from sqlalchemy.sql import text
 
+# -------------------- Config --------------------
 DB_URL = os.getenv("DATABASE_URL", "sqlite:///eventos.db")
+ADMIN_KEY = os.getenv("ADMIN_KEY", "troque-isto")
+
+# poda: 80% -> 70%
+PRUNE_THRESHOLD = float(os.getenv("PRUNE_THRESHOLD", "0.80"))
+PRUNE_TARGET    = float(os.getenv("PRUNE_TARGET", "0.70"))
+PRUNE_BATCH     = int(os.getenv("PRUNE_BATCH", "1000"))
+# fallback p/ bancos não-sqlite: controla por quantidade de linhas
+MAX_ROWS        = int(os.getenv("MAX_ROWS", "500000"))
+
 engine = create_engine(DB_URL, pool_pre_ping=True, future=True)
+BACKEND = engine.url.get_backend_name()  # 'sqlite', 'postgresql', etc.
+
+def _sqlite_db_path_from_url(db_url: str) -> str:
+    u = urlparse(db_url)
+    # sqlite: relative: sqlite:///file.db | absolute: sqlite:////abs/path.db
+    if u.scheme != "sqlite":
+        return ""
+    path = u.path
+    if path.startswith("//"):
+        # sqlite:////abs/path -> path='/abs/path'
+        return path[1:]
+    # sqlite:///file.db -> path='/file.db' (relative)
+    return path.lstrip("/") or "eventos.db"
+
+DB_PATH = os.getenv("DB_PATH", _sqlite_db_path_from_url(DB_URL))
+
 md = MetaData()
 eventos_tb = Table(
     "eventos", md,
@@ -17,7 +44,7 @@ eventos_tb = Table(
     Column("status", Text),
     Column("objeto", Text),
     Column("descricao", Text),
-    Column("imagem", Text),           # base64 (ideal é mover para armazenamento externo depois)
+    Column("imagem", Text),  # base64
     Column("identificador", Text),
 )
 
@@ -28,9 +55,10 @@ def init_db():
 def salvar_evento(ev: dict):
     with engine.begin() as conn:
         conn.execute(eventos_tb.insert().values(**ev))
+        prune_if_needed(conn)
 
+# -------------------- Busca --------------------
 def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
-    # NÃO traz a coluna imagem. Calcula apenas se existe.
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
         "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img",
@@ -39,21 +67,27 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
     params = {}
 
     if filtro:
-    termos = [t.strip() for t in filtro.replace(",", " ").split() if t.strip()]
-    if termos:
-        or_parts = []
-        for i, t in enumerate(termos):
-            k = f"q{i}"
-            # busca case-sensitive em SQLite
-            or_parts.append(
-                f"(instr(objeto, :{k}) > 0 OR instr(descricao, :{k}) > 0 OR instr(identificador, :{k}) > 0)"
-            )
-            params[k] = t
-        sql.append("AND (" + " OR ".join(or_parts) + ")")
-
+        termos = [t.strip() for t in filtro.replace(",", " ").split() if t.strip()]
+        if termos:
+            or_parts = []
+            for i, t in enumerate(termos):
+                k = f"q{i}"
+                if BACKEND == "sqlite":
+                    expr = f"(instr(objeto, :{k}) > 0 OR instr(descricao, :{k}) > 0 OR instr(identificador, :{k}) > 0)"
+                else:
+                    # PostgreSQL e afins
+                    expr = f"(POSITION(:{k} IN objeto) > 0 OR POSITION(:{k} IN descricao) > 0 OR POSITION(:{k} IN identificador) > 0)"
+                or_parts.append(expr)
+                params[k] = t
+            sql.append("AND (" + " OR ".join(or_parts) + ")")
 
     if data:
-        sql.append("AND DATE(timestamp) = :d")
+        # timestamp no formato 'YYYY-MM-DD HH:MM:SS'
+        if BACKEND == "sqlite":
+            sql.append("AND substr(timestamp,1,10) = :d")
+        else:
+            # left(text,10) em Postgres
+            sql.append("AND left(timestamp,10) = :d")
         params["d"] = data
 
     if status:
@@ -75,12 +109,13 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
         ))
     return evs
 
+# -------------------- Template --------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Painel de Alertas</title>
+  <title>{{ page_title }}</title>
   <script>
     setInterval(() => {
       const t = document.activeElement && document.activeElement.tagName;
@@ -165,9 +200,6 @@ HTML_TEMPLATE = """
           <div class="kv"><b>Status:</b> {{ e.status|capitalize }}</div>
           <div class="kv"><b>Objeto:</b> {{ e.objeto }}</div>
 
-          <!-- Se quiser exatamente como no mockup:
-               <div class="kv"><b>Análise Objeto:</b> {{ e.objeto }}</div>
-          -->
           <div class="ctx"><b>Analise objeto:</b> {{ e.descricao|safe }}</div>
         </div>
       </div>
@@ -186,10 +218,10 @@ HTML_TEMPLATE = """
 </html>
 """
 
-
+# -------------------- App --------------------
 app = Flask(__name__)
 
-# ----- logos e fallbacks -----
+# logos e fallbacks
 _TRANSPARENT_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
 
 @app.route("/logo-fallback.png")
@@ -229,7 +261,6 @@ def _iaprotect_url():
 
 @app.after_request
 def no_cache(resp):
-    # não aplicar no cache das imagens estáticas
     if request.path.startswith(("/logo-", "/img/", "/static/")):
         return resp
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -237,7 +268,28 @@ def no_cache(resp):
     resp.headers["Expires"] = "0"
     return resp
 
-# ----- rota para servir imagem de um evento -----
+# -------------------- Reset admin --------------------
+from flask import abort
+
+@app.route("/admin/reset")
+def admin_reset():
+    key = request.args.get("key", "")
+    if key != ADMIN_KEY:
+        abort(403)
+
+    try:
+        if BACKEND == "sqlite" and DB_PATH and os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+            init_db()
+        else:
+            # outros bancos: truncar tabela
+            with engine.begin() as conn:
+                conn.execute(text("DELETE FROM eventos"))
+        return "OK: banco recriado", 200
+    except Exception as e:
+        return f"ERRO: {e}", 500
+
+# -------------------- Imagens --------------------
 @app.route("/img/<int:ev_id>")
 def img(ev_id: int):
     with engine.begin() as conn:
@@ -250,10 +302,10 @@ def img(ev_id: int):
         abort(404)
     return send_file(BytesIO(b), mimetype="image/jpeg", max_age=3600)
 
-# ----- rotas principais -----
+# -------------------- Rotas principais --------------------
 @app.route("/")
 def index():
-    return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas"
+    return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas | GET /admin/reset?key=..."
 
 @app.route("/evento", methods=["POST"])
 def receber_evento():
@@ -301,7 +353,6 @@ def historico():
         iaprotect_url=_iaprotect_url()
     )
 
-
 @app.route("/alertas")
 def alertas():
     raw = (request.args.get("filtro") or "Perigo Sim").strip()
@@ -341,7 +392,79 @@ def alertas():
         iaprotect_url=_iaprotect_url()
     )
 
+# -------------------- Poda automática --------------------
+def _disk_usage_for_path(path: str):
+    try:
+        st = os.statvfs(os.path.abspath(path))
+        total = st.f_frsize * st.f_blocks
+        used  = total - (st.f_frsize * st.f_bavail)
+        return used, total
+    except Exception:
+        return 0, 0
 
+def prune_if_needed(conn):
+    removed_total = 0
+
+    if BACKEND == "sqlite" and DB_PATH:
+        used, total = _disk_usage_for_path(DB_PATH)
+        if total <= 0:
+            return
+        uso = used / total
+        if uso < PRUNE_THRESHOLD:
+            return
+        while uso > PRUNE_TARGET:
+            r = conn.execute(text("""
+                DELETE FROM eventos
+                WHERE id IN (
+                    SELECT id FROM eventos
+                    ORDER BY timestamp ASC
+                    LIMIT :lim
+                )
+            """), {"lim": PRUNE_BATCH})
+            conn.commit()
+            removed = r.rowcount or 0
+            if removed == 0:
+                break
+            # Recupera espaço no SQLite
+            if BACKEND == "sqlite":
+                try:
+                    conn.execute(text("VACUUM"))
+                    conn.commit()
+                except Exception:
+                    pass
+            used, total = _disk_usage_for_path(DB_PATH)
+            uso = used / total
+            removed_total += removed
+    else:
+        # bancos não-sqlite: controla por quantidade de linhas
+        total_rows = conn.execute(text("SELECT COUNT(*) FROM eventos")).scalar_one()
+        if total_rows <= int(MAX_ROWS * PRUNE_THRESHOLD):
+            return
+        target_rows = int(MAX_ROWS * PRUNE_TARGET)
+        to_remove = max(0, total_rows - target_rows)
+        while to_remove > 0:
+            step = min(PRUNE_BATCH, to_remove)
+            r = conn.execute(text(f"""
+                DELETE FROM eventos
+                WHERE id IN (
+                    SELECT id FROM eventos
+                    ORDER BY timestamp ASC
+                    LIMIT :lim
+                )
+            """), {"lim": step})
+            conn.commit()
+            removed = r.rowcount or 0
+            if removed == 0:
+                break
+            removed_total += removed
+            to_remove -= removed
+
+    try:
+        print(f"[PRUNE] removidos={removed_total}")
+    except Exception:
+        pass
+
+# -------------------- Main --------------------
 if __name__ == "__main__":
     init_db()
     app.run(host="0.0.0.0", port=10000)
