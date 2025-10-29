@@ -41,7 +41,7 @@ eventos_tb = Table(
     Column("descricao", Text),
     Column("imagem", Text),   # base64 legado (opcional)
     Column("identificador", Text),
-    Column("img_url", Text),  # NOVO: URL da imagem em disco
+    Column("img_url", Text),  # URL pública quando existir
 )
 
 def _ensure_img_url_column():
@@ -52,7 +52,6 @@ def _ensure_img_url_column():
             if "img_url" not in names:
                 conn.execute(text("ALTER TABLE eventos ADD COLUMN img_url TEXT"))
     else:
-        # bancos que suportam IF NOT EXISTS
         try:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE eventos ADD COLUMN IF NOT EXISTS img_url TEXT"))
@@ -83,7 +82,7 @@ def _save_image_to_static(b64: str) -> str | None:
     try:
         with open(path_abs, "wb") as f:
             f.write(raw)
-        # URL relativa para usar no template
+        # retorna URL relativa resolvida via /static
         return url_for('static', filename=path_rel, _external=False)
     except Exception:
         return None
@@ -344,18 +343,18 @@ def index():
 def receber_evento():
     dados = request.json or {}
 
-    # salva imagem em disco e guarda URL
-    img_b64 = dados.get("image", "") or ""
-    img_url = _save_image_to_static(img_b64) if img_b64 else None
+    # prioriza URL pública enviada pelo cliente; salva base64 só se necessário
+    img_url_in = (dados.get("img_url") or "").strip()
+    img_b64 = (dados.get("image") or "").strip()
+    img_url = img_url_in or (_save_image_to_static(img_b64) if img_b64 else "")
 
     evento = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object", ""),
         "descricao": (dados.get("description", "") or "").replace("\n", "<br>"),
-        # não guardamos mais base64 por padrão
-        "imagem": "",  # legado vazio
-        "img_url": img_url or "",
+        "imagem": "",                 # legado vazio
+        "img_url": img_url,           # URL pública ou ""
         "identificador": dados.get("identificador", "desconhecido"),
     }
     salvar_evento(evento)
