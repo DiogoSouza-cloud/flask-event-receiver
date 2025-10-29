@@ -18,7 +18,7 @@ PRUNE_BATCH     = int(os.getenv("PRUNE_BATCH", "1000"))
 MAX_ROWS        = int(os.getenv("MAX_ROWS", "500000"))
 
 engine = create_engine(DB_URL, pool_pre_ping=True, future=True)
-BACKEND = engine.url.get_backend_name()  # 'sqlite', 'postgresql', etc.
+BACKEND = engine.url.get_backend_name()
 
 def _sqlite_db_path_from_url(db_url: str) -> str:
     u = urlparse(db_url)
@@ -39,9 +39,9 @@ eventos_tb = Table(
     Column("status", Text),
     Column("objeto", Text),
     Column("descricao", Text),
-    Column("imagem", Text),   # base64 legado (opcional)
+    Column("imagem", Text),   # base64 armazenado
     Column("identificador", Text),
-    Column("img_url", Text),  # URL pública quando existir
+    Column("img_url", Text),  # ficará vazio neste modo
 )
 
 def _ensure_img_url_column():
@@ -63,29 +63,6 @@ def init_db():
     _ensure_img_url_column()
     os.makedirs("static", exist_ok=True)
     os.makedirs(os.path.join("static", "ev"), exist_ok=True)
-
-# --------- util: salvar imagem em disco e devolver URL relativa ---------
-def _save_image_to_static(b64: str) -> str | None:
-    if not b64:
-        return None
-    try:
-        raw = base64.b64decode(b64, validate=False)
-    except Exception:
-        return None
-    day = datetime.now().strftime("%Y-%m-%d")
-    folder_rel = os.path.join("ev", day)
-    folder_abs = os.path.join("static", folder_rel)
-    os.makedirs(folder_abs, exist_ok=True)
-    fname = datetime.now().strftime("%H%M%S_%f") + ".jpg"
-    path_rel = os.path.join(folder_rel, fname).replace("\\", "/")
-    path_abs = os.path.join("static", path_rel)
-    try:
-        with open(path_abs, "wb") as f:
-            f.write(raw)
-        # retorna URL relativa resolvida via /static
-        return url_for('static', filename=path_rel, _external=False)
-    except Exception:
-        return None
 
 def salvar_evento(ev: dict):
     with engine.begin() as conn:
@@ -158,21 +135,13 @@ HTML_TEMPLATE = """
   </script>
   <style>
     :root {
-      --bg: #faf6ed;
-      --card: #ffffff;
-      --ink: #1b1b1b;
-      --muted: #666;
-      --alert: #c62828;
-      --ok: #2e7d32;
-      --accent: #111;
+      --bg: #faf6ed; --card: #ffffff; --ink: #1b1b1b; --muted: #666;
+      --alert: #c62828; --ok: #2e7d32; --accent: #111;
     }
     * { box-sizing: border-box; }
     body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:var(--bg); }
-    header {
-      background: var(--bg);
-      display:flex; align-items:center; justify-content:space-between;
-      padding:14px 24px; border-bottom:1px solid #e6e0d5;
-    }
+    header { background: var(--bg); display:flex; align-items:center; justify-content:space-between;
+      padding:14px 24px; border-bottom:1px solid #e6e0d5; }
     .head-left { display:flex; align-items:center; gap:18px; }
     .logo-iaprotect { height:30px; }
     .logo-rowau { height:34px; }
@@ -180,21 +149,13 @@ HTML_TEMPLATE = """
 
     .wrap { padding:20px 28px; max-width:1100px; }
     form { margin: 0 0 16px 0; display:flex; gap:8px; }
-    input[type="text"], input[type="date"] {
-      padding:8px 10px; border:1px solid #d9d3c6; border-radius:6px; background:#fff;
-    }
+    input[type="text"], input[type="date"] { padding:8px 10px; border:1px solid #d9d3c6; border-radius:6px; background:#fff; }
     button { padding:8px 12px; border:1px solid #bdb6a7; background:#fff; border-radius:6px; cursor:pointer; }
 
-    .card {
-      display:grid; grid-template-columns: 200px 1fr;
-      gap:16px; align-items:start;
-      background:var(--card); padding:14px; margin:14px 0;
-      border-radius:10px; border:1px solid #e6e0d5;
-    }
+    .card { display:grid; grid-template-columns: 200px 1fr; gap:16px; align-items:start;
+      background:var(--card); padding:14px; margin:14px 0; border-radius:10px; border:1px solid #e6e0d5; }
     .card.alerta { border-left:6px solid var(--alert); }
-    .thumb {
-      width:200px; height:140px; object-fit:cover; border:1px solid #ddd; border-radius:6px; background:#f5f5f5;
-    }
+    .thumb { width:200px; height:140px; object-fit:cover; border:1px solid #ddd; border-radius:6px; background:#f5f5f5; }
     .meta { font-size:14px; color:var(--muted); margin-bottom:6px; }
     .kv { margin:4px 0; }
     .kv b { display:inline-block; width:160px; }
@@ -221,21 +182,16 @@ HTML_TEMPLATE = """
 
     {% for e in eventos %}
       <div class="card {% if e.status == 'alerta' %}alerta{% endif %}">
-        {% if e.img_url %}
-          <img class="thumb" src="{{ e.img_url }}" loading="lazy" alt="frame do evento">
-        {% elif e.tem_img %}
+        {% if e.tem_img %}
           <img class="thumb" src="{{ url_for('img', ev_id=e.id) }}" loading="lazy" alt="frame do evento">
         {% else %}
           <div style="width:200px;height:140px" class="thumb"></div>
         {% endif %}
-
         <div>
           <div class="meta">{{ e.timestamp }}</div>
-
           <div class="kv"><b>Identificador:</b> {{ e.identificador }}</div>
           <div class="kv"><b>Status:</b> {{ e.status|capitalize }}</div>
           <div class="kv"><b>Objeto:</b> {{ e.objeto }}</div>
-
           <div class="ctx"><b>Analise objeto:</b> {{ e.descricao|safe }}</div>
         </div>
       </div>
@@ -257,7 +213,6 @@ HTML_TEMPLATE = """
 # -------------------- App --------------------
 app = Flask(__name__)
 
-# logos e fallbacks
 _TRANSPARENT_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
 
 @app.route("/logo-fallback.png")
@@ -321,7 +276,7 @@ def admin_reset():
     except Exception as e:
         return f"ERRO: {e}", 500
 
-# -------------------- Imagens legadas (base64) --------------------
+# -------------------- Imagem base64 (legado) --------------------
 @app.route("/img/<int:ev_id>")
 def img(ev_id: int):
     with engine.begin() as conn:
@@ -343,18 +298,16 @@ def index():
 def receber_evento():
     dados = request.json or {}
 
-    # prioriza URL pública enviada pelo cliente; salva base64 só se necessário
-    img_url_in = (dados.get("img_url") or "").strip()
+    # Revertido: sempre grava base64 no BD e zera img_url
     img_b64 = (dados.get("image") or "").strip()
-    img_url = img_url_in or (_save_image_to_static(img_b64) if img_b64 else "")
 
     evento = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object", ""),
         "descricao": (dados.get("description", "") or "").replace("\n", "<br>"),
-        "imagem": "",                 # legado vazio
-        "img_url": img_url,           # URL pública ou ""
+        "imagem": img_b64,      # base64 direto
+        "img_url": "",          # ignorado neste modo
         "identificador": dados.get("identificador", "desconhecido"),
     }
     salvar_evento(evento)
