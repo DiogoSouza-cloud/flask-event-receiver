@@ -102,24 +102,39 @@ def salvar_evento(ev: dict):
 
 # -------------------- Busca para o painel --------------------
 def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
+    def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
         "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,",
-        "COALESCE(img_url,'') AS img_url",
+        "COALESCE(img_url,'') AS img_url,",
+        "COALESCE(camera_id,'') AS camera_id,",
+        "COALESCE(local,'') AS local",
         "FROM eventos WHERE 1=1",
     ]
     params = {}
 
     if filtro:
-        termos = [t.strip() for t in filtro.replace(",", " ").split() if t.strip()]
+        termos = [t.strip() for t in filtro.replace(',', ' ').split() if t.strip()]
         if termos:
             or_parts = []
             for i, t in enumerate(termos):
                 k = f"q{i}"
                 if BACKEND == "sqlite":
-                    expr = f"(instr(objeto, :{k}) > 0 OR instr(descricao, :{k}) > 0 OR instr(identificador, :{k}) > 0)"
+                    expr = (
+                        f"(instr(objeto, :{k}) > 0 OR "
+                        f"instr(descricao, :{k}) > 0 OR "
+                        f"instr(identificador, :{k}) > 0 OR "
+                        f"instr(camera_id, :{k}) > 0 OR "
+                        f"instr(local, :{k}) > 0)"
+                    )
                 else:
-                    expr = f"(POSITION(:{k} IN objeto) > 0 OR POSITION(:{k} IN descricao) > 0 OR POSITION(:{k} IN identificador) > 0)"
+                    expr = (
+                        f"(POSITION(:{k} IN objeto) > 0 OR "
+                        f"POSITION(:{k} IN descricao) > 0 OR "
+                        f"POSITION(:{k} IN identificador) > 0 OR "
+                        f"POSITION(:{k} IN camera_id) > 0 OR "
+                        f"POSITION(:{k} IN local) > 0)"
+                    )
                 or_parts.append(expr)
                 params[k] = t
             sql.append("AND (" + " OR ".join(or_parts) + ")")
@@ -145,11 +160,19 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
     evs = []
     for r in rows:
         evs.append(dict(
-            id=r[0], timestamp=r[1], status=r[2], objeto=r[3],
-            descricao=r[4], identificador=r[5],
-            tem_img=bool(r[6]), img_url=r[7] or ""
+            id=r[0],
+            timestamp=r[1],
+            status=r[2],
+            objeto=r[3],
+            descricao=r[4],
+            identificador=r[5],
+            tem_img=bool(r[6]),
+            img_url=r[7] or "",
+            camera_id=r[8] or "",
+            local=r[9] or "",
         ))
     return evs
+
 
 # -------------------- Template (inalterado na UX) --------------------
 HTML_TEMPLATE = """
@@ -223,6 +246,8 @@ HTML_TEMPLATE = """
           <div class="kv"><b>Identificador:</b> {{ e.identificador }}</div>
           <div class="kv"><b>Status:</b> {{ e.status|capitalize }}</div>
           <div class="kv"><b>Objeto:</b> {{ e.objeto }}</div>
+          <div class="kv"><b>CAM:</b> {{ e.camera_id }}</div>
+          <div class="kv"><b>Local:</b> {{ e.local }}</div>
           <div class="ctx"><b>Analise objeto:</b> {{ e.descricao|safe }}</div>
         </div>
       </div>
