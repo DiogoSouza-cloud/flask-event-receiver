@@ -41,26 +41,57 @@ eventos_tb = Table(
     Column("descricao", Text),
     Column("imagem", Text),   # base64 armazenado
     Column("identificador", Text),
-    Column("img_url", Text),  # ficará vazio neste modo
+    Column("img_url", Text),  # não usado neste modo
+    # novos campos
+    Column("camera_id", Text),
+    Column("local", Text),
+    Column("descricao_raw", Text),
+    Column("descricao_pt", Text),
+    Column("model_yolo", Text),
+    Column("classes", Text),
+    Column("yolo_conf", Text),
+    Column("yolo_imgsz", Text),
 )
 
-def _ensure_img_url_column():
+def _ensure_columns():
+    """Migração leve: adiciona colunas que faltarem."""
     if BACKEND == "sqlite":
         with engine.begin() as conn:
             cols = conn.execute(text("PRAGMA table_info(eventos)")).all()
             names = {c[1] for c in cols}
-            if "img_url" not in names:
-                conn.execute(text("ALTER TABLE eventos ADD COLUMN img_url TEXT"))
+            def add(colname): conn.execute(text(f"ALTER TABLE eventos ADD COLUMN {colname} TEXT"))
+            if "img_url"      not in names: add("img_url")
+            if "camera_id"    not in names: add("camera_id")
+            if "local"        not in names: add("local")
+            if "descricao_raw"not in names: add("descricao_raw")
+            if "descricao_pt" not in names: add("descricao_pt")
+            if "model_yolo"   not in names: add("model_yolo")
+            if "classes"      not in names: add("classes")
+            if "yolo_conf"    not in names: add("yolo_conf")
+            if "yolo_imgsz"   not in names: add("yolo_imgsz")
     else:
-        try:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE eventos ADD COLUMN IF NOT EXISTS img_url TEXT"))
-        except Exception:
-            pass
+        # genérico: tentar ADD COLUMN IF NOT EXISTS onde suportado; ignorar erro
+        stmts = [
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS img_url TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS camera_id TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS local TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS descricao_raw TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS descricao_pt TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS model_yolo TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS classes TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS yolo_conf TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS yolo_imgsz TEXT",
+        ]
+        with engine.begin() as conn:
+            for s in stmts:
+                try:
+                    conn.execute(text(s))
+                except Exception:
+                    pass
 
 def init_db():
     md.create_all(engine)
-    _ensure_img_url_column()
+    _ensure_columns()
     os.makedirs("static", exist_ok=True)
     os.makedirs(os.path.join("static", "ev"), exist_ok=True)
 
@@ -69,7 +100,7 @@ def salvar_evento(ev: dict):
         conn.execute(eventos_tb.insert().values(**ev))
         prune_if_needed(conn)
 
-# -------------------- Busca --------------------
+# -------------------- Busca para o painel --------------------
 def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
@@ -120,7 +151,7 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
         ))
     return evs
 
-# -------------------- Template --------------------
+# -------------------- Template (inalterado na UX) --------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -292,23 +323,48 @@ def img(ev_id: int):
 # -------------------- Rotas principais --------------------
 @app.route("/")
 def index():
-    return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas | GET /admin/reset?key=..."
+    return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas | GET /api/events | GET /api/stats | GET /admin/reset?key=..."
 
 @app.route("/evento", methods=["POST"])
 def receber_evento():
     dados = request.json or {}
 
-    # Revertido: sempre grava base64 no BD e zera img_url
+    # Campos novos e legado
+    camera_id    = (dados.get("camera_id") or "").strip()
+    local        = (dados.get("local") or "").strip()
+
+    desc_raw_in  = (dados.get("descricao_raw") or dados.get("description") or "").strip()
+    desc_pt_in   = (dados.get("descricao_pt")  or "").strip()
+    # preencher pt com raw caso venha vazio
+    if not desc_pt_in:
+        desc_pt_in = desc_raw_in
+
+    model_yolo  = (dados.get("model_yolo") or dados.get("model") or "").strip()
+    classes     = (dados.get("classes") or "").strip()
+    yolo_conf   = str(dados.get("yolo_conf") or dados.get("conf") or "")
+    yolo_imgsz  = str(dados.get("yolo_imgsz") or dados.get("imgsz") or "")
+
     img_b64 = (dados.get("image") or "").strip()
 
     evento = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object", ""),
-        "descricao": (dados.get("description", "") or "").replace("\n", "<br>"),
-        "imagem": img_b64,      # base64 direto
-        "img_url": "",          # ignorado neste modo
+        # painel continua usando 'descricao' => gravamos a versão PT por padrão
+        "descricao": (desc_pt_in or "").replace("\n", "<br>"),
+        "imagem": img_b64,
+        "img_url": "",
         "identificador": dados.get("identificador", "desconhecido"),
+
+        # extras
+        "camera_id": camera_id,
+        "local": local,
+        "descricao_raw": desc_raw_in,
+        "descricao_pt": desc_pt_in,
+        "model_yolo": model_yolo,
+        "classes": classes,
+        "yolo_conf": yolo_conf,
+        "yolo_imgsz": yolo_imgsz,
     }
     salvar_evento(evento)
     return jsonify({"ok": True})
@@ -324,6 +380,15 @@ def receber_resposta_ia():
         "imagem": "",
         "img_url": "",
         "identificador": dados.get("identificador", "desconhecido"),
+        # extras vazios
+        "camera_id": (dados.get("camera_id") or "").strip(),
+        "local": (dados.get("local") or "").strip(),
+        "descricao_raw": "",
+        "descricao_pt": "",
+        "model_yolo": "",
+        "classes": "",
+        "yolo_conf": "",
+        "yolo_imgsz": "",
     }
     salvar_evento(evento)
     return jsonify({"ok": True})
@@ -383,6 +448,144 @@ def alertas():
         logo_url=_logo_url(),
         iaprotect_url=_iaprotect_url()
     )
+
+# -------------------- APIs para Grafana --------------------
+@app.route("/api/events")
+def api_events():
+    """
+    Parâmetros:
+      - since: ISO ou 'YYYY-MM-DD HH:MM:SS' (opcional)
+      - limit: int (default 200)
+      - camera_id, local, status: filtros opcionais
+    """
+    since = (request.args.get("since") or "").strip()
+    limit = int(request.args.get("limit") or 200)
+    camera_id = (request.args.get("camera_id") or "").strip()
+    local = (request.args.get("local") or "").strip()
+    status = (request.args.get("status") or "").strip()
+
+    clauses = ["1=1"]
+    params = {}
+
+    if since:
+        # aceita data parcial YYYY-MM-DD
+        if len(since) == 10 and since.count("-") == 2:
+            since = since + " 00:00:00"
+        clauses.append("timestamp >= :since")
+        params["since"] = since
+
+    if camera_id:
+        clauses.append("camera_id = :cid")
+        params["cid"] = camera_id
+
+    if local:
+        clauses.append("local LIKE :loc")
+        params["loc"] = f"%{local}%"
+
+    if status:
+        clauses.append("status = :st")
+        params["st"] = status
+
+    sql = f"""
+    SELECT id, timestamp, status, identificador, camera_id, local, objeto,
+           descricao, COALESCE(descricao_raw,''), COALESCE(descricao_pt,''),
+           COALESCE(model_yolo,''), COALESCE(classes,''), COALESCE(yolo_conf,''), COALESCE(yolo_imgsz,''),
+           CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS has_img
+      FROM eventos
+     WHERE {" AND ".join(clauses)}
+     ORDER BY id DESC
+     LIMIT :lim
+    """
+    params["lim"] = limit
+
+    with engine.begin() as conn:
+        rows = conn.execute(text(sql), params).all()
+
+    out = []
+    for r in rows:
+        out.append({
+            "id": r[0],
+            "timestamp": r[1],
+            "status": r[2],
+            "identificador": r[3],
+            "camera_id": r[4] or "",
+            "local": r[5] or "",
+            "objeto": r[6] or "",
+            "descricao": r[7] or "",          # renderizada no painel
+            "descricao_raw": r[8] or "",
+            "descricao_pt": r[9] or "",
+            "model_yolo": r[10] or "",
+            "classes": r[11] or "",
+            "yolo_conf": r[12] or "",
+            "yolo_imgsz": r[13] or "",
+            "has_img": bool(r[14]),
+            "image_url": url_for("img", ev_id=r[0], _external=True) if r[14] else ""
+        })
+    return jsonify(out)
+
+@app.route("/api/stats")
+def api_stats():
+    """
+    range: h24 (default) | d7
+    """
+    rng = (request.args.get("range") or "h24").lower()
+    now = datetime.now()
+
+    if BACKEND == "sqlite":
+        if rng == "d7":
+            # por dia últimos 7 dias
+            sql = """
+            SELECT substr(timestamp,1,10) AS dia,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status='alerta' THEN 1 ELSE 0 END) AS alertas
+            FROM eventos
+            WHERE timestamp >= :since
+            GROUP BY dia
+            ORDER BY dia ASC
+            """
+            since = (now - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00")
+        else:
+            # por hora últimas 24h
+            sql = """
+            SELECT substr(timestamp,1,13) AS hora,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN status='alerta' THEN 1 ELSE 0 END) AS alertas
+            FROM eventos
+            WHERE timestamp >= :since
+            GROUP BY hora
+            ORDER BY hora ASC
+            """
+            since = (now - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        with engine.begin() as conn:
+            rows = conn.execute(text(sql), {"since": since}).all()
+        data = []
+        for r in rows:
+            data.append({"bucket": r[0], "total": int(r[1] or 0), "alertas": int(r[2] or 0)})
+        return jsonify({"range": rng, "series": data})
+    else:
+        # fallback simples: carrega janela e agrega em Python
+        if rng == "d7":
+            since = now - timedelta(days=7)
+            fmt = "%Y-%m-%d"
+            bucket = lambda ts: ts[:10]
+        else:
+            since = now - timedelta(hours=24)
+            fmt = "%Y-%m-%d %H"
+            bucket = lambda ts: ts[:13]
+
+        with engine.begin() as conn:
+            rows = conn.execute(text("SELECT timestamp, status FROM eventos WHERE timestamp >= :s"),
+                                {"s": since.strftime("%Y-%m-%d %H:%M:%S")}).all()
+        agg = {}
+        for ts, st in rows:
+            key = bucket(ts)
+            a = agg.get(key, {"total":0, "alertas":0})
+            a["total"] += 1
+            if st == "alerta":
+                a["alertas"] += 1
+            agg[key] = a
+        series = [{"bucket": k, "total": v["total"], "alertas": v["alertas"]} for k,v in sorted(agg.items())]
+        return jsonify({"range": rng, "series": series})
 
 # -------------------- Poda automática --------------------
 def _disk_usage_for_path(path: str):
