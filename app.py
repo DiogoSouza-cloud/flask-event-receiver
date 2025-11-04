@@ -101,13 +101,17 @@ def salvar_evento(ev: dict):
 
 # -------------------- Busca para o painel --------------------
 def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
-    # SELECT inclui camera_id e local
+    # SELECT inclui mais campos para exibição no cartão
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
         "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,",
         "COALESCE(img_url,'') AS img_url,",
         "COALESCE(camera_id,'') AS camera_id,",
-        "COALESCE(local,'') AS local",
+        "COALESCE(local,'') AS local,",
+        "COALESCE(model_yolo,'') AS model_yolo,",
+        "COALESCE(classes,'') AS classes,",
+        "COALESCE(yolo_conf,'') AS yolo_conf,",
+        "COALESCE(yolo_imgsz,'') AS yolo_imgsz",
         "FROM eventos WHERE 1=1",
     ]
     params = {}
@@ -156,89 +160,171 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
             id=r[0], timestamp=r[1], status=r[2], objeto=r[3],
             descricao=r[4], identificador=r[5],
             tem_img=bool(r[6]), img_url=r[7] or "",
-            camera_id=r[8] or "", local=r[9] or ""
+            camera_id=r[8] or "", local=r[9] or "",
+            model_yolo=r[10] or "", classes=r[11] or "",
+            yolo_conf=r[12] or "", yolo_imgsz=r[13] or ""
         ))
     return evs
 
-# -------------------- Template (UX preservada; CAM/Local adicionados) --------------------
+# -------------------- Template (facelift) --------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <title>{{ page_title }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <script>
+    // Auto-refresh suave
     setInterval(() => {
       const t = document.activeElement && document.activeElement.tagName;
-      if (!['INPUT','TEXTAREA','SELECT'].includes(t)) location.reload();
+      if (!['INPUT','TEXTAREA','SELECT','BUTTON'].includes(t)) location.reload();
     }, 20000);
   </script>
   <style>
-    :root {
-      --bg: #faf6ed; --card: #ffffff; --ink: #1b1b1b; --muted: #666;
-      --alert: #c62828; --ok: #2e7d32; --accent: #111;
+    :root{
+      --bg: #f7f7f8;
+      --surface: #ffffff;
+      --ink: #101010;
+      --muted:#6b7280;
+      --line:#e5e7eb;
+      --brand:#111827;
+      --danger:#dc2626;
+      --ok:#16a34a;
+      --chip:#eef2ff;
+      --chip-ink:#3730a3;
     }
-    * { box-sizing: border-box; }
-    body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:var(--bg); }
-    header { background: var(--bg); display:flex; align-items:center; justify-content:space-between;
-      padding:14px 24px; border-bottom:1px solid #e6e0d5; }
-    .head-left { display:flex; align-items:center; gap:18px; }
-    .logo-iaprotect { height:30px; }
-    .logo-rowau { height:34px; }
-    h1 { margin:0; font-size:30px; font-weight:700; color:var(--accent); }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      color:var(--ink); background:var(--bg);
+    }
+    header{
+      position:sticky; top:0; z-index:10;
+      background:linear-gradient(180deg,#ffffff 0%,#fafafa 100%);
+      border-bottom:1px solid var(--line);
+      display:flex; align-items:center; justify-content:space-between; gap:16px;
+      padding:12px 20px;
+    }
+    .brand{display:flex; align-items:center; gap:14px}
+    .logo-iaprotect{height:28px}
+    .logo-rowau{height:34px}
+    h1{margin:0; font-size:20px; color:var(--brand); font-weight:700}
 
-    .wrap { padding:20px 28px; max-width:1100px; }
-    form { margin: 0 0 16px 0; display:flex; gap:8px; }
-    input[type="text"], input[type="date"] { padding:8px 10px; border:1px solid #d9d3c6; border-radius:6px; background:#fff; }
-    button { padding:8px 12px; border:1px solid #bdb6a7; background:#fff; border-radius:6px; cursor:pointer; }
+    .wrap{max-width:1080px; margin:0 auto; padding:18px}
+    .toolbar{
+      position:sticky; top:64px; z-index:9;
+      background:var(--surface); border:1px solid var(--line);
+      padding:10px; border-radius:10px; box-shadow:0 2px 6px rgba(0,0,0,.04);
+      display:flex; gap:8px; align-items:center;
+      margin-bottom:16px;
+    }
+    .toolbar input[type="text"], .toolbar input[type="date"]{
+      border:1px solid var(--line); background:#fff; color:var(--ink);
+      padding:8px 10px; border-radius:8px; outline:none; min-width:220px;
+    }
+    .toolbar button{
+      border:1px solid var(--line); background:#111827; color:#fff;
+      padding:8px 14px; border-radius:8px; cursor:pointer;
+    }
+    .grid{display:grid; grid-template-columns: 280px 1fr; gap:16px}
+    @media (max-width: 860px){ .grid{ grid-template-columns: 1fr; } }
 
-    .card { display:grid; grid-template-columns: 200px 1fr; gap:16px; align-items:start;
-      background:var(--card); padding:14px; margin:14px 0; border-radius:10px; border:1px solid #e6e0d5; }
-    .card.alerta { border-left:6px solid var(--alert); }
-    .thumb { width:200px; height:140px; object-fit:cover; border:1px solid #ddd; border-radius:6px; background:#f5f5f5; }
-    .meta { font-size:14px; color:var(--muted); margin-bottom:6px; }
-    .kv { margin:4px 0; }
-    .kv b { display:inline-block; width:160px; }
-    .ctx { margin-top:6px; line-height:1.35; }
-    .pager { margin-top:12px; }
-    .pager a { margin-right:10px; }
+    .thumb{
+      width:100%; aspect-ratio: 4/3; object-fit:cover;
+      border:1px solid var(--line); border-radius:10px; background:#f3f4f6;
+    }
+
+    .card{
+      background:var(--surface);
+      border:1px solid var(--line);
+      border-left:6px solid transparent;
+      border-radius:12px; padding:14px; margin:14px 0;
+    }
+    .card.alerta{ border-left-color: var(--danger); }
+    .meta{ color:var(--muted); font-size:12.5px; margin-bottom:6px }
+    .kv{ margin:4px 0; font-size:14.5px }
+    .kv b{ color:#374151; display:inline-block; min-width:148px }
+    .ctx{ margin-top:8px; line-height:1.45 }
+    .badge{
+      display:inline-block; font-size:12px; padding:3px 8px; border-radius:999px;
+      border:1px solid var(--line); background:#fff; color:#374151; margin-left:8px;
+    }
+    .badge.alerta{ background:#fee2e2; color:#991b1b; border-color:#fecaca }
+    .chips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:6px }
+    .chip{ background:var(--chip); color:var(--chip-ink); border:1px solid #e0e7ff; padding:3px 8px; border-radius:999px; font-size:12px }
+
+    .pager{ display:flex; gap:12px; margin-top:18px }
+    .pager a{ color:#2563eb; text-decoration:none; font-size:14px }
+    .sep{ height:1px; background:var(--line); margin:10px 0 }
   </style>
 </head>
 <body>
   <header>
-    <div class="head-left">
+    <div class="brand">
       <img src="{{ iaprotect_url }}" class="logo-iaprotect" alt="IAProtect">
       <h1>{{ page_title }}</h1>
+      {% if eventos and eventos|length > 0 %}
+        <span class="badge">Itens: {{ eventos|length }}</span>
+      {% endif %}
     </div>
     <img src="{{ logo_url }}" class="logo-rowau" alt="ROWAU">
   </header>
 
   <div class="wrap">
-    <form method="get">
+    <form method="get" class="toolbar">
       <input type="text" name="filtro" placeholder="Palavra-chave" value="{{ filtro }}">
       <input type="date" name="data" value="{{ data }}">
       <button type="submit">Buscar</button>
     </form>
 
     {% for e in eventos %}
-      <div class="card {% if e.status == 'alerta' %}alerta{% endif %}">
-        {% if e.tem_img %}
-          <img class="thumb" src="{{ url_for('img', ev_id=e.id) }}" loading="lazy" alt="frame do evento">
-        {% else %}
-          <div style="width:200px;height:140px" class="thumb"></div>
-        {% endif %}
-        <div>
-          <div class="meta">{{ e.timestamp }}</div>
-          <div class="kv"><b>Identificador:</b> {{ e.identificador }}</div>
-          <div class="kv"><b>Status:</b> {{ e.status|capitalize }}</div>
-          <div class="kv"><b>Objeto:</b> {{ e.objeto }}</div>
-          <div class="kv"><b>CAM:</b> {{ e.camera_id }}</div>
-          <div class="kv"><b>Local:</b> {{ e.local }}</div>
-          <div class="ctx"><b>Analise objeto:</b> {{ e.descricao|safe }}</div>
+      <div class="card {% if e.status.lower() == 'alerta' or e.status.lower() == 'alerta' %}alerta{% elif e.status.lower() == 'alerta' %}alerta{% endif %}">
+        <div class="grid">
+          <div>
+            {% if e.tem_img %}
+              <img class="thumb" src="{{ url_for('img', ev_id=e.id) }}" loading="lazy" alt="frame do evento">
+            {% else %}
+              <div class="thumb"></div>
+            {% endif %}
+          </div>
+          <div>
+            <div class="meta">{{ e.timestamp }}</div>
+
+            <div class="kv"><b>Identificador:</b> {{ e.identificador }}
+              <span class="badge {% if e.status.lower() == 'alerta' %}alerta{% endif %}">{{ e.status|capitalize }}</span>
+            </div>
+
+            <div class="kv"><b>Objeto:</b> {{ e.objeto }}</div>
+            <div class="kv"><b>CÂMERA:</b> {{ e.camera_id or '-' }}</div>
+            <div class="kv"><b>Local:</b> {{ e.local or '-' }}</div>
+
+            {% if e.model_yolo or e.classes %}
+              <div class="sep"></div>
+              <div class="kv"><b>YOLO:</b>
+                {% if e.model_yolo %} modelo {{ e.model_yolo }}{% endif %}
+                {% if e.yolo_conf %} · conf {{ e.yolo_conf }}{% endif %}
+                {% if e.yolo_imgsz %} · imgsz {{ e.yolo_imgsz }}{% endif %}
+              </div>
+              {% if e.classes %}
+                <div class="chips">
+                  {% for c in e.classes.split(',') %}
+                    <span class="chip">{{ c.strip() }}</span>
+                  {% endfor %}
+                </div>
+              {% endif %}
+            {% endif %}
+
+            <div class="sep"></div>
+            <div class="ctx">
+              <b>Analisar objeto:</b> {{ e.descricao|safe }}
+            </div>
+          </div>
         </div>
       </div>
     {% else %}
-      <p>Nenhum evento encontrado.</p>
+      <p style="color:#6b7280">Nenhum evento encontrado.</p>
     {% endfor %}
 
     <div class="pager">
