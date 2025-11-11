@@ -119,7 +119,7 @@ def salvar_evento(ev: dict):
 
 # -------------------- Busca para o painel --------------------
 def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
-    # Incluí llava_pt (se quiser usar direto no cartão depois)
+    # Incluí llava_pt + job_id + sha256 + file_name para depuração
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
         "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,",
@@ -130,7 +130,10 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
         "COALESCE(classes,'') AS classes,",
         "COALESCE(yolo_conf,'') AS yolo_conf,",
         "COALESCE(yolo_imgsz,'') AS yolo_imgsz,",
-        "COALESCE(llava_pt,'') AS llava_pt",
+        "COALESCE(llava_pt,'') AS llava_pt,",
+        "COALESCE(job_id,'') AS job_id,",
+        "COALESCE(sha256,'') AS sha256,",
+        "COALESCE(file_name,'') AS file_name",
         "FROM eventos WHERE 1=1",
     ]
     params = {}
@@ -144,12 +147,12 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
                 if BACKEND == "sqlite":
                     expr = (
                         f"(instr(objeto, :{k}) > 0 OR instr(descricao, :{k}) > 0 OR "
-                        f"instr(identificador, :{k}) > 0 OR instr(camera_id, :{k}) > 0 OR instr(local, :{k}) > 0)"
+                        f"instr(identificador, :{k}) > 0 OR instr(camera_id, :{k}) > 0 OR instr(local, :{k}) > 0 OR instr(job_id, :{k}) > 0)"
                     )
                 else:
                     expr = (
                         f"(POSITION(:{k} IN objeto) > 0 OR POSITION(:{k} IN descricao) > 0 OR "
-                        f"POSITION(:{k} IN identificador) > 0 OR POSITION(:{k} IN camera_id) > 0 OR POSITION(:{k} IN local) > 0)"
+                        f"POSITION(:{k} IN identificador) > 0 OR POSITION(:{k} IN camera_id) > 0 OR POSITION(:{k} IN local) > 0 OR POSITION(:{k} IN job_id) > 0)"
                     )
                 or_parts.append(expr)
                 params[k] = t
@@ -182,7 +185,8 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
             camera_id=r[8] or "", local=r[9] or "",
             model_yolo=r[10] or "", classes=r[11] or "",
             yolo_conf=r[12] or "", yolo_imgsz=r[13] or "",
-            llava_pt=r[14] or ""
+            llava_pt=r[14] or "",
+            job_id=r[15] or "", sha256=r[16] or "", file_name=r[17] or ""
         ))
     return evs
 
@@ -309,6 +313,12 @@ HTML_TEMPLATE = """
           <div>
             <div class="meta">{{ e.timestamp }}</div>
 
+            <div class="kv"><b>Evento ID:</b> {{ e.id }}
+              {% if e.job_id %}<span class="badge">JOB {{ e.job_id }}</span>{% endif %}
+              {% if e.file_name %}<span class="badge">FILE {{ e.file_name }}</span>{% endif %}
+              {% if e.sha256 %}<span class="badge">SHA {{ e.sha256[:10] }}…</span>{% endif %}
+            </div>
+
             <div class="kv"><b>Identificador:</b> {{ e.identificador }}
               <span class="badge {% if e.status.lower() == 'alerta' %}alerta{% endif %}">{{ e.status|capitalize }}</span>
             </div>
@@ -336,6 +346,10 @@ HTML_TEMPLATE = """
             <div class="sep"></div>
             <div class="ctx">
               <b>Analisar objeto:</b> {{ e.descricao|safe }}
+              {% if e.llava_pt %}
+                <div class="sep"></div>
+                <div class="ctx"><b>LLaVA-PT:</b> {{ e.llava_pt }}</div>
+              {% endif %}
             </div>
           </div>
         </div>
