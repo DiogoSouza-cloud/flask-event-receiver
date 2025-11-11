@@ -39,10 +39,11 @@ eventos_tb = Table(
     Column("status", Text),
     Column("objeto", Text),
     Column("descricao", Text),
-    Column("imagem", Text),   # base64 armazenado
+    Column("imagem", Text),   # base64 armazenado (legado)
     Column("identificador", Text),
     Column("img_url", Text),  # não usado neste modo
-    # novos campos já suportados no banco
+
+    # colunas já adicionadas anteriormente
     Column("camera_id", Text),
     Column("local", Text),
     Column("descricao_raw", Text),
@@ -51,6 +52,13 @@ eventos_tb = Table(
     Column("classes", Text),
     Column("yolo_conf", Text),
     Column("yolo_imgsz", Text),
+
+    # --- novas colunas para correlação robusta ---
+    Column("job_id", Text),        # correlação YOLO <-> LLaVA
+    Column("sha256", Text),        # opcional, se já vier do cliente
+    Column("file_name", Text),     # opcional
+    Column("llava_pt", Text),      # texto final do LLaVA
+    Column("dur_llava_ms", Text),  # duração LLaVA (texto p/ não quebrar)
 )
 
 def _ensure_columns():
@@ -69,6 +77,11 @@ def _ensure_columns():
             if "classes"      not in names: add("classes")
             if "yolo_conf"    not in names: add("yolo_conf")
             if "yolo_imgsz"   not in names: add("yolo_imgsz")
+            if "job_id"       not in names: add("job_id")
+            if "sha256"       not in names: add("sha256")
+            if "file_name"    not in names: add("file_name")
+            if "llava_pt"     not in names: add("llava_pt")
+            if "dur_llava_ms" not in names: add("dur_llava_ms")
     else:
         stmts = [
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS img_url TEXT",
@@ -80,6 +93,11 @@ def _ensure_columns():
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS classes TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS yolo_conf TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS yolo_imgsz TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS job_id TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS sha256 TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS file_name TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS llava_pt TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS dur_llava_ms TEXT",
         ]
         with engine.begin() as conn:
             for s in stmts:
@@ -101,7 +119,7 @@ def salvar_evento(ev: dict):
 
 # -------------------- Busca para o painel --------------------
 def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
-    # SELECT inclui mais campos para exibição no cartão
+    # Incluí llava_pt (se quiser usar direto no cartão depois)
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
         "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,",
@@ -111,7 +129,8 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
         "COALESCE(model_yolo,'') AS model_yolo,",
         "COALESCE(classes,'') AS classes,",
         "COALESCE(yolo_conf,'') AS yolo_conf,",
-        "COALESCE(yolo_imgsz,'') AS yolo_imgsz",
+        "COALESCE(yolo_imgsz,'') AS yolo_imgsz,",
+        "COALESCE(llava_pt,'') AS llava_pt",
         "FROM eventos WHERE 1=1",
     ]
     params = {}
@@ -162,7 +181,8 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
             tem_img=bool(r[6]), img_url=r[7] or "",
             camera_id=r[8] or "", local=r[9] or "",
             model_yolo=r[10] or "", classes=r[11] or "",
-            yolo_conf=r[12] or "", yolo_imgsz=r[13] or ""
+            yolo_conf=r[12] or "", yolo_imgsz=r[13] or "",
+            llava_pt=r[14] or ""
         ))
     return evs
 
@@ -175,7 +195,6 @@ HTML_TEMPLATE = """
   <title>{{ page_title }}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script>
-    // Auto-refresh suave
     setInterval(() => {
       const t = document.activeElement && document.activeElement.tagName;
       if (!['INPUT','TEXTAREA','SELECT','BUTTON'].includes(t)) location.reload();
@@ -196,10 +215,8 @@ HTML_TEMPLATE = """
     }
     *{box-sizing:border-box}
     html,body{height:100%}
-    body{
-      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
-      color:var(--ink); background:var(--bg);
-    }
+    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      color:var(--ink); background:var(--bg); }
     header{
       position:sticky; top:0; z-index:10;
       background:linear-gradient(180deg,#ffffff 0%,#fafafa 100%);
@@ -422,36 +439,56 @@ def img(ev_id: int):
 def index():
     return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas | GET /api/events | GET /api/stats | GET /admin/reset?key=..."
 
+def _now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def _trim(s: str) -> str:
+    return (s or "").strip()
+
+def _best_effort_find_event(conn, identificador: str, camera_id: str):
+    """Fallback quando não vier job_id: pega o mais recente nas últimas 15 min pelo par (identificador, camera_id)."""
+    since = (datetime.now() - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+    row = conn.execute(
+        text("""
+        SELECT id FROM eventos
+         WHERE identificador=:id AND camera_id=:cam AND timestamp >= :since
+         ORDER BY id DESC LIMIT 1
+        """),
+        {"id": identificador, "cam": camera_id, "since": since}
+    ).first()
+    return row[0] if row else None
+
 @app.route("/evento", methods=["POST"])
 def receber_evento():
     dados = request.json or {}
 
-    # Campos novos e legado
-    camera_id    = (dados.get("camera_id") or "").strip()
-    local        = (dados.get("local") or "").strip()
+    # Novos + legado
+    job_id      = _trim(dados.get("job_id"))
+    camera_id   = _trim(dados.get("camera_id"))
+    local       = _trim(dados.get("local"))
+    desc_raw_in = _trim(dados.get("descricao_raw") or dados.get("description"))
+    desc_pt_in  = _trim(dados.get("descricao_pt") or desc_raw_in)
+    model_yolo  = _trim(dados.get("model_yolo") or dados.get("model"))
+    classes     = _trim(dados.get("classes"))
+    yolo_conf   = _trim(str(dados.get("yolo_conf") or dados.get("conf") or ""))
+    yolo_imgsz  = _trim(str(dados.get("yolo_imgsz") or dados.get("imgsz") or ""))
 
-    desc_raw_in  = (dados.get("descricao_raw") or dados.get("description") or "").strip()
-    desc_pt_in   = (dados.get("descricao_pt")  or "").strip()
+    sha256      = _trim(dados.get("sha256"))
+    file_name   = _trim(dados.get("file_name"))
+    img_b64     = _trim(dados.get("image"))
+
+    # Se não vier descrição_pt, usa a raw
     if not desc_pt_in:
         desc_pt_in = desc_raw_in
 
-    model_yolo  = (dados.get("model_yolo") or dados.get("model") or "").strip()
-    classes     = (dados.get("classes") or "").strip()
-    yolo_conf   = str(dados.get("yolo_conf") or dados.get("conf") or "")
-    yolo_imgsz  = str(dados.get("yolo_imgsz") or dados.get("imgsz") or "")
-
-    img_b64 = (dados.get("image") or "").strip()
-
-    evento = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    base_row = {
+        "timestamp": _now_str(),
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object", ""),
         "descricao": (desc_pt_in or "").replace("\n", "<br>"),
         "imagem": img_b64,
         "img_url": "",
         "identificador": dados.get("identificador", "desconhecido"),
-
-        # extras
         "camera_id": camera_id,
         "local": local,
         "descricao_raw": desc_raw_in,
@@ -460,31 +497,101 @@ def receber_evento():
         "classes": classes,
         "yolo_conf": yolo_conf,
         "yolo_imgsz": yolo_imgsz,
+        "job_id": job_id,
+        "sha256": sha256,
+        "file_name": file_name,
     }
-    salvar_evento(evento)
+
+    with engine.begin() as conn:
+        if job_id:
+            # Tenta atualizar se já existir o job
+            row = conn.execute(text("SELECT id FROM eventos WHERE job_id=:j ORDER BY id DESC LIMIT 1"),
+                               {"j": job_id}).first()
+            if row:
+                set_parts = []
+                params = {}
+                for k, v in base_row.items():
+                    if k in ("timestamp",):
+                        continue
+                    set_parts.append(f"{k}=:{k}")
+                    params[k] = v
+                params["id"] = row[0]
+                conn.execute(text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
+                             dict(params, ts=_now_str()))
+            else:
+                conn.execute(eventos_tb.insert().values(**base_row))
+        else:
+            # Sem job_id: insere normalmente (legado)
+            conn.execute(eventos_tb.insert().values(**base_row))
+
+        prune_if_needed(conn)
+
     return jsonify({"ok": True})
 
 @app.route("/resposta_ia", methods=["POST"])
 def receber_resposta_ia():
     dados = request.json or {}
-    evento = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "status": "ok",
-        "objeto": "Análise IA",
-        "descricao": (dados.get("resposta", "") or "").replace("\n", "<br>"),
-        "imagem": "",
-        "img_url": "",
-        "identificador": dados.get("identificador", "desconhecido"),
-        "camera_id": (dados.get("camera_id") or "").strip(),
-        "local": (dados.get("local") or "").strip(),
-        "descricao_raw": "",
-        "descricao_pt": "",
-        "model_yolo": "",
-        "classes": "",
-        "yolo_conf": "",
-        "yolo_imgsz": "",
-    }
-    salvar_evento(evento)
+    job_id     = _trim(dados.get("job_id"))
+    ident      = _trim(dados.get("identificador"))
+    camera_id  = _trim(dados.get("camera_id"))
+    local      = _trim(dados.get("local"))
+    llava_pt   = _trim(dados.get("resposta") or dados.get("llava_pt"))
+    dur_ms     = _trim(str(dados.get("dur_llava_ms") or ""))
+
+    # Se vier HTML, mantém; se vier texto puro, preserva quebras de linha
+    desc_html = (llava_pt or "").replace("\n", "<br>")
+
+    with engine.begin() as conn:
+        target_id = None
+
+        if job_id:
+            row = conn.execute(text("SELECT id FROM eventos WHERE job_id=:j ORDER BY id DESC LIMIT 1"),
+                               {"j": job_id}).first()
+            if row:
+                target_id = row[0]
+        else:
+            # Fallback quando job_id não vem (legado)
+            target_id = _best_effort_find_event(conn, ident, camera_id)
+
+        if target_id is None:
+            # Se não achou ninguém, registra como linha separada (compatibilidade)
+            ev = {
+                "timestamp": _now_str(),
+                "status": "ok",
+                "objeto": "Análise IA",
+                "descricao": desc_html,
+                "imagem": "",
+                "img_url": "",
+                "identificador": ident or "desconhecido",
+                "camera_id": camera_id,
+                "local": local,
+                "descricao_raw": "",
+                "descricao_pt": "",
+                "model_yolo": "",
+                "classes": "",
+                "yolo_conf": "",
+                "yolo_imgsz": "",
+                "job_id": job_id,
+                "llava_pt": llava_pt,
+                "dur_llava_ms": dur_ms,
+            }
+            conn.execute(eventos_tb.insert().values(**ev))
+        else:
+            # Atualiza o próprio evento da imagem com a resposta do LLaVA
+            conn.execute(
+                text("""
+                UPDATE eventos
+                   SET descricao=:desc_html,
+                       llava_pt=:llp,
+                       dur_llava_ms=:dur,
+                       local=COALESCE(NULLIF(:loc,''), local)
+                 WHERE id=:id
+                """),
+                {"desc_html": desc_html, "llp": llava_pt, "dur": dur_ms, "loc": local, "id": target_id}
+            )
+
+        prune_if_needed(conn)
+
     return jsonify({"ok": True})
 
 @app.route("/historico")
