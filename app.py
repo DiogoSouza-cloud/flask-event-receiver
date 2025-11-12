@@ -645,6 +645,33 @@ def alertas():
         logo_url=_logo_url(),
         iaprotect_url=_iaprotect_url()
     )
+# --- novo endpoint ---
+@app.route("/api/event/llava", methods=["PATCH","POST"])
+def api_event_llava():
+    data = request.get_json(force=True, silent=True) or {}
+    job_id = (data.get("job_id") or "").strip()
+    llava_pt = (data.get("llava_pt") or "").strip()
+
+    if not job_id:
+        return {"ok": False, "error": "job_id required"}, 400
+
+    # encontre o evento correspondente
+    ev = db.query_one("SELECT id, job_id FROM eventos WHERE job_id = ?", (job_id,))
+    if not ev:
+        # fallback opcional por sha256 (se você enviar no PATCH)
+        sha = (data.get("sha256") or "").strip()
+        if sha:
+            ev = db.query_one("SELECT id, job_id FROM eventos WHERE sha256 = ? ORDER BY id DESC LIMIT 1", (sha,))
+
+    if not ev:
+        return {"ok": False, "error": "event not found for job_id"}, 404
+
+    # atualiza apenas os campos de LLaVA
+    db.execute(
+        "UPDATE eventos SET llava_pt=?, llava_ready=1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+        (llava_pt, ev["id"])
+    )
+    return {"ok": True, "id": ev["id"]}
 
 # -------------------- APIs para Grafana --------------------
 @app.route("/api/events")
