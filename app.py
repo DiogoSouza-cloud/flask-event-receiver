@@ -55,7 +55,7 @@ eventos_tb = Table(
 
     # --- novas colunas para correlação robusta ---
     Column("job_id", Text),        # correlação YOLO <-> LLaVA
-    Column("sha256", Text),        # opcional, se já vier do cliente
+    Column("sha256", Text),        # pode vir do GuardDesk (ou receber img_hash mapeado)
     Column("file_name", Text),     # opcional
     Column("llava_pt", Text),      # texto final do LLaVA
     Column("dur_llava_ms", Text),  # duração LLaVA (texto p/ não quebrar)
@@ -206,78 +206,37 @@ HTML_TEMPLATE = """
   </script>
   <style>
     :root{
-      --bg: #f7f7f8;
-      --surface: #ffffff;
-      --ink: #101010;
-      --muted:#6b7280;
-      --line:#e5e7eb;
-      --brand:#111827;
-      --danger:#dc2626;
-      --ok:#16a34a;
-      --chip:#eef2ff;
-      --chip-ink:#3730a3;
+      --bg: #f7f7f8; --surface: #ffffff; --ink: #101010;
+      --muted:#6b7280; --line:#e5e7eb; --brand:#111827;
+      --danger:#dc2626; --ok:#16a34a; --chip:#eef2ff; --chip-ink:#3730a3;
     }
     *{box-sizing:border-box}
     html,body{height:100%}
-    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
-      color:var(--ink); background:var(--bg); }
-    header{
-      position:sticky; top:0; z-index:10;
-      background:linear-gradient(180deg,#ffffff 0%,#fafafa 100%);
-      border-bottom:1px solid var(--line);
-      display:flex; align-items:center; justify-content:space-between; gap:16px;
-      padding:12px 20px;
-    }
+    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; color:var(--ink); background:var(--bg); }
+    header{ position:sticky; top:0; z-index:10; background:linear-gradient(180deg,#ffffff 0%,#fafafa 100%); border-bottom:1px solid var(--line);
+      display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; }
     .brand{display:flex; align-items:center; gap:14px}
-    .logo-iaprotect{height:28px}
-    .logo-rowau{height:34px}
+    .logo-iaprotect{height:28px} .logo-rowau{height:34px}
     h1{margin:0; font-size:20px; color:var(--brand); font-weight:700}
-
     .wrap{max-width:1080px; margin:0 auto; padding:18px}
-    .toolbar{
-      position:sticky; top:64px; z-index:9;
-      background:var(--surface); border:1px solid var(--line);
-      padding:10px; border-radius:10px; box-shadow:0 2px 6px rgba(0,0,0,.04);
-      display:flex; gap:8px; align-items:center;
-      margin-bottom:16px;
-    }
-    .toolbar input[type="text"], .toolbar input[type="date"]{
-      border:1px solid var(--line); background:#fff; color:var(--ink);
-      padding:8px 10px; border-radius:8px; outline:none; min-width:220px;
-    }
-    .toolbar button{
-      border:1px solid var(--line); background:#111827; color:#fff;
-      padding:8px 14px; border-radius:8px; cursor:pointer;
-    }
+    .toolbar{ position:sticky; top:64px; z-index:9; background:var(--surface); border:1px solid var(--line);
+      padding:10px; border-radius:10px; box-shadow:0 2px 6px rgba(0,0,0,.04); display:flex; gap:8px; align-items:center; margin-bottom:16px; }
+    .toolbar input[type="text"], .toolbar input[type="date"]{ border:1px solid var(--line); background:#fff; color:var(--ink);
+      padding:8px 10px; border-radius:8px; outline:none; min-width:220px; }
+    .toolbar button{ border:1px solid var(--line); background:#111827; color:#fff; padding:8px 14px; border-radius:8px; cursor:pointer; }
     .grid{display:grid; grid-template-columns: 280px 1fr; gap:16px}
     @media (max-width: 860px){ .grid{ grid-template-columns: 1fr; } }
-
-    .thumb{
-      width:100%; aspect-ratio: 4/3; object-fit:cover;
-      border:1px solid var(--line); border-radius:10px; background:#f3f4f6;
-    }
-
-    .card{
-      background:var(--surface);
-      border:1px solid var(--line);
-      border-left:6px solid transparent;
-      border-radius:12px; padding:14px; margin:14px 0;
-    }
+    .thumb{ width:100%; aspect-ratio: 4/3; object-fit:cover; border:1px solid var(--line); border-radius:10px; background:#f3f4f6; }
+    .card{ background:var(--surface); border:1px solid var(--line); border-left:6px solid transparent; border-radius:12px; padding:14px; margin:14px 0; }
     .card.alerta{ border-left-color: var(--danger); }
     .meta{ color:var(--muted); font-size:12.5px; margin-bottom:6px }
-    .kv{ margin:4px 0; font-size:14.5px }
-    .kv b{ color:#374151; display:inline-block; min-width:148px }
+    .kv{ margin:4px 0; font-size:14.5px } .kv b{ color:#374151; display:inline-block; min-width:148px }
     .ctx{ margin-top:8px; line-height:1.45 }
-    .badge{
-      display:inline-block; font-size:12px; padding:3px 8px; border-radius:999px;
-      border:1px solid var(--line); background:#fff; color:#374151; margin-left:8px;
-    }
+    .badge{ display:inline-block; font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid var(--line); background:#fff; color:#374151; margin-left:8px; }
     .badge.alerta{ background:#fee2e2; color:#991b1b; border-color:#fecaca }
     .chips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:6px }
     .chip{ background:var(--chip); color:var(--chip-ink); border:1px solid #e0e7ff; padding:3px 8px; border-radius:999px; font-size:12px }
-
-    .pager{ display:flex; gap:12px; margin-top:18px }
-    .pager a{ color:#2563eb; text-decoration:none; font-size:14px }
+    .pager{ display:flex; gap:12px; margin-top:18px } .pager a{ color:#2563eb; text-decoration:none; font-size:14px }
     .sep{ height:1px; background:var(--line); margin:10px 0 }
   </style>
 </head>
@@ -459,19 +418,6 @@ def _now_str():
 def _trim(s: str) -> str:
     return (s or "").strip()
 
-def _best_effort_find_event(conn, identificador: str, camera_id: str):
-    """Fallback quando não vier job_id: pega o mais recente nas últimas 15 min pelo par (identificador, camera_id)."""
-    since = (datetime.now() - timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
-    row = conn.execute(
-        text("""
-        SELECT id FROM eventos
-         WHERE identificador=:id AND camera_id=:cam AND timestamp >= :since
-         ORDER BY id DESC LIMIT 1
-        """),
-        {"id": identificador, "cam": camera_id, "since": since}
-    ).first()
-    return row[0] if row else None
-
 @app.route("/evento", methods=["POST"])
 def receber_evento():
     dados = request.json or {}
@@ -488,6 +434,10 @@ def receber_evento():
     yolo_imgsz  = _trim(str(dados.get("yolo_imgsz") or dados.get("imgsz") or ""))
 
     sha256      = _trim(dados.get("sha256"))
+    img_hash    = _trim(dados.get("img_hash"))
+    if not sha256 and img_hash:
+        sha256 = img_hash  # mapeia img_hash -> sha256 (schema existente)
+
     file_name   = _trim(dados.get("file_name"))
     img_b64     = _trim(dados.get("image"))
 
@@ -514,6 +464,7 @@ def receber_evento():
         "job_id": job_id,
         "sha256": sha256,
         "file_name": file_name,
+        "llava_pt": desc_pt_in,   # exibe no painel, mesmo quando veio já pronto do GuardDesk
     }
 
     with engine.begin() as conn:
@@ -544,6 +495,11 @@ def receber_evento():
 
 @app.route("/resposta_ia", methods=["POST"])
 def receber_resposta_ia():
+    """
+    Atualiza somente quando houver job_id correspondente.
+    Sem job_id, registra a resposta como linha separada "Análise IA".
+    Isso elimina o risco de colar texto em imagem errada.
+    """
     dados = request.json or {}
     job_id     = _trim(dados.get("job_id"))
     ident      = _trim(dados.get("identificador"))
@@ -552,7 +508,6 @@ def receber_resposta_ia():
     llava_pt   = _trim(dados.get("resposta") or dados.get("llava_pt"))
     dur_ms     = _trim(str(dados.get("dur_llava_ms") or ""))
 
-    # Se vier HTML, mantém; se vier texto puro, preserva quebras de linha
     desc_html = (llava_pt or "").replace("\n", "<br>")
 
     with engine.begin() as conn:
@@ -563,12 +518,9 @@ def receber_resposta_ia():
                                {"j": job_id}).first()
             if row:
                 target_id = row[0]
-        else:
-            # Fallback quando job_id não vem (legado)
-            target_id = _best_effort_find_event(conn, ident, camera_id)
 
         if target_id is None:
-            # Se não achou ninguém, registra como linha separada (compatibilidade)
+            # Sem job_id ou não encontrado -> cria linha separada (não toca na imagem)
             ev = {
                 "timestamp": _now_str(),
                 "status": "ok",
