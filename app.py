@@ -494,11 +494,13 @@ def receber_evento():
     return jsonify({"ok": True})
 
 @app.route("/resposta_ia", methods=["POST"])
+@app.route("/resposta_ia", methods=["POST"])
 def receber_resposta_ia():
     """
     Atualiza somente quando houver job_id correspondente.
     Sem job_id, registra a resposta como linha separada "Análise IA".
-    Isso elimina o risco de colar texto em imagem errada.
+    NÃO sobrescreve 'descricao' (que contém o texto YOLO).
+    Apenas escreve 'llava_pt' e metadados.
     """
     dados = request.json or {}
     job_id     = _trim(dados.get("job_id"))
@@ -508,24 +510,24 @@ def receber_resposta_ia():
     llava_pt   = _trim(dados.get("resposta") or dados.get("llava_pt"))
     dur_ms     = _trim(str(dados.get("dur_llava_ms") or ""))
 
-    desc_html = (llava_pt or "").replace("\n", "<br>")
-
     with engine.begin() as conn:
         target_id = None
 
         if job_id:
-            row = conn.execute(text("SELECT id FROM eventos WHERE job_id=:j ORDER BY id DESC LIMIT 1"),
-                               {"j": job_id}).first()
+            row = conn.execute(
+                text("SELECT id FROM eventos WHERE job_id=:j ORDER BY id DESC LIMIT 1"),
+                {"j": job_id}
+            ).first()
             if row:
                 target_id = row[0]
 
         if target_id is None:
-            # Sem job_id ou não encontrado -> cria linha separada (não toca na imagem)
+            # Sem job_id (ou não encontrado): não toca em imagens; cria linha separada.
             ev = {
                 "timestamp": _now_str(),
                 "status": "ok",
                 "objeto": "Análise IA",
-                "descricao": desc_html,
+                "descricao": (llava_pt or "").replace("\n", "<br>"),
                 "imagem": "",
                 "img_url": "",
                 "identificador": ident or "desconhecido",
@@ -543,22 +545,22 @@ def receber_resposta_ia():
             }
             conn.execute(eventos_tb.insert().values(**ev))
         else:
-            # Atualiza o próprio evento da imagem com a resposta do LLaVA
+            # Atualiza APENAS campos do LLaVA; não mexe na 'descricao' (YOLO).
             conn.execute(
                 text("""
                 UPDATE eventos
-                   SET descricao=:desc_html,
-                       llava_pt=:llp,
+                   SET llava_pt=:llp,
                        dur_llava_ms=:dur,
                        local=COALESCE(NULLIF(:loc,''), local)
                  WHERE id=:id
                 """),
-                {"desc_html": desc_html, "llp": llava_pt, "dur": dur_ms, "loc": local, "id": target_id}
+                {"llp": llava_pt, "dur": dur_ms, "loc": local, "id": target_id}
             )
 
         prune_if_needed(conn)
 
     return jsonify({"ok": True})
+
 
 @app.route("/historico")
 def historico():
