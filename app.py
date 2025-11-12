@@ -493,7 +493,7 @@ def receber_evento():
 
     return jsonify({"ok": True})
 
-@app.route("/resposta_ia", methods=["POST"])
+
 @app.route("/resposta_ia", methods=["POST"])
 def receber_resposta_ia():
     """
