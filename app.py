@@ -39,25 +39,27 @@ eventos_tb = Table(
     Column("timestamp", Text),
     Column("status", Text),
     Column("objeto", Text),
-    Column("descricao", Text),
-    Column("imagem", Text),   # base64 armazenado (legado)
+    Column("descricao", Text),      # <-- apenas YOLO no painel
+    Column("imagem", Text),         # base64 armazenado (legado)
     Column("identificador", Text),
     Column("img_url", Text),
 
     Column("camera_id", Text),
     Column("local", Text),
-    Column("descricao_raw", Text),
-    Column("descricao_pt", Text),
+    Column("descricao_raw", Text),  # texto bruto (se preferir guardar)
+    Column("descricao_pt", Text),   # espelho do YOLO puro
     Column("model_yolo", Text),
     Column("classes", Text),
     Column("yolo_conf", Text),
     Column("yolo_imgsz", Text),
 
     # colunas de correlação
-    Column("job_id", Text),        # correlação YOLO <-> LLaVA
+    Column("job_id", Text),         # correlação YOLO <-> LLaVA
     Column("sha256", Text),
     Column("file_name", Text),
-    Column("llava_pt", Text),      # texto final do LLaVA
+
+    # resposta LLaVA (somente aqui)
+    Column("llava_pt", Text),
     Column("dur_llava_ms", Text),
 )
 
@@ -117,7 +119,7 @@ def salvar_evento(ev: dict):
         conn.execute(eventos_tb.insert().values(**ev))
         prune_if_needed(conn)
 
-# -------------------- Busca para o painel --------------------
+# -------------------- Busca p/ painel --------------------
 def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
@@ -645,33 +647,6 @@ def alertas():
         logo_url=_logo_url(),
         iaprotect_url=_iaprotect_url()
     )
-# --- novo endpoint ---
-@app.route("/api/event/llava", methods=["PATCH","POST"])
-def api_event_llava():
-    data = request.get_json(force=True, silent=True) or {}
-    job_id = (data.get("job_id") or "").strip()
-    llava_pt = (data.get("llava_pt") or "").strip()
-
-    if not job_id:
-        return {"ok": False, "error": "job_id required"}, 400
-
-    # encontre o evento correspondente
-    ev = db.query_one("SELECT id, job_id FROM eventos WHERE job_id = ?", (job_id,))
-    if not ev:
-        # fallback opcional por sha256 (se você enviar no PATCH)
-        sha = (data.get("sha256") or "").strip()
-        if sha:
-            ev = db.query_one("SELECT id, job_id FROM eventos WHERE sha256 = ? ORDER BY id DESC LIMIT 1", (sha,))
-
-    if not ev:
-        return {"ok": False, "error": "event not found for job_id"}, 404
-
-    # atualiza apenas os campos de LLaVA
-    db.execute(
-        "UPDATE eventos SET llava_pt=?, llava_ready=1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        (llava_pt, ev["id"])
-    )
-    return {"ok": True, "id": ev["id"]}
 
 # -------------------- APIs para Grafana --------------------
 @app.route("/api/events")
