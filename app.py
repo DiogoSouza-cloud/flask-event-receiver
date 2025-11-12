@@ -3,6 +3,7 @@ import base64
 from io import BytesIO
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
+import re
 
 from flask import Flask, request, jsonify, render_template_string, url_for, send_file, abort
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
@@ -41,9 +42,8 @@ eventos_tb = Table(
     Column("descricao", Text),
     Column("imagem", Text),   # base64 armazenado (legado)
     Column("identificador", Text),
-    Column("img_url", Text),  # não usado neste modo
+    Column("img_url", Text),
 
-    # colunas já adicionadas anteriormente
     Column("camera_id", Text),
     Column("local", Text),
     Column("descricao_raw", Text),
@@ -53,12 +53,12 @@ eventos_tb = Table(
     Column("yolo_conf", Text),
     Column("yolo_imgsz", Text),
 
-    # --- novas colunas para correlação robusta ---
+    # colunas de correlação
     Column("job_id", Text),        # correlação YOLO <-> LLaVA
-    Column("sha256", Text),        # pode vir do GuardDesk (ou receber img_hash mapeado)
-    Column("file_name", Text),     # opcional
+    Column("sha256", Text),
+    Column("file_name", Text),
     Column("llava_pt", Text),      # texto final do LLaVA
-    Column("dur_llava_ms", Text),  # duração LLaVA (texto p/ não quebrar)
+    Column("dur_llava_ms", Text),
 )
 
 def _ensure_columns():
@@ -119,7 +119,6 @@ def salvar_evento(ev: dict):
 
 # -------------------- Busca para o painel --------------------
 def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
-    # Incluí llava_pt + job_id + sha256 + file_name para depuração
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
         "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,",
@@ -190,7 +189,7 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
         ))
     return evs
 
-# -------------------- Template (facelift) --------------------
+# -------------------- Template --------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -260,7 +259,7 @@ HTML_TEMPLATE = """
     </form>
 
     {% for e in eventos %}
-      <div class="card {% if e.status.lower() == 'alerta' or e.status.lower() == 'alerta' %}alerta{% elif e.status.lower() == 'alerta' %}alerta{% endif %}">
+      <div class="card {% if e.status.lower() == 'alerta' %}alerta{% endif %}">
         <div class="grid">
           <div>
             {% if e.tem_img %}
@@ -407,6 +406,23 @@ def img(ev_id: int):
         abort(404)
     return send_file(BytesIO(b), mimetype="image/jpeg", max_age=3600)
 
+# -------------------- Helpers de parsing --------------------
+_LAVA_MARKER = re.compile(r"(?:^|\n)\s*🌐\s*Analisar\s+local:\s*", re.IGNORECASE)
+
+def _split_yolo_llava(desc: str):
+    """
+    Se a descrição vier misturada (YOLO + '🌐 Analisar local: ...'),
+    devolve (yolo_only, llava_text).
+    """
+    if not desc:
+        return "", ""
+    m = _LAVA_MARKER.split(desc, maxsplit=1)
+    if len(m) == 1:
+        return desc.strip(), ""
+    yolo = m[0].strip()
+    llava = m[1].strip()
+    return yolo, llava
+
 # -------------------- Rotas principais --------------------
 @app.route("/")
 def index():
@@ -415,7 +431,7 @@ def index():
 def _now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def _trim(s: str) -> str:
+def _trim(s):
     return (s or "").strip()
 
 @app.route("/evento", methods=["POST"])
@@ -426,8 +442,18 @@ def receber_evento():
     job_id      = _trim(dados.get("job_id"))
     camera_id   = _trim(dados.get("camera_id"))
     local       = _trim(dados.get("local"))
-    desc_raw_in = _trim(dados.get("descricao_raw") or dados.get("description"))
-    desc_pt_in  = _trim(dados.get("descricao_pt") or desc_raw_in)
+
+    # Preferir YOLO puro se vier no campo dedicado
+    yolo_desc_in = _trim(dados.get("descricao_yolo_pt"))
+    desc_raw_in  = _trim(dados.get("descricao_raw") or dados.get("description"))
+    desc_pt_in   = _trim(dados.get("descricao_pt") or desc_raw_in)  # pode vir misto
+
+    # Se não veio a YOLO pura, tentar separar da mista
+    if not yolo_desc_in and desc_pt_in:
+        yolo_desc_in, llava_extra = _split_yolo_llava(desc_pt_in)
+    else:
+        llava_extra = ""
+
     model_yolo  = _trim(dados.get("model_yolo") or dados.get("model"))
     classes     = _trim(dados.get("classes"))
     yolo_conf   = _trim(str(dados.get("yolo_conf") or dados.get("conf") or ""))
@@ -436,43 +462,46 @@ def receber_evento():
     sha256      = _trim(dados.get("sha256"))
     img_hash    = _trim(dados.get("img_hash"))
     if not sha256 and img_hash:
-        sha256 = img_hash  # mapeia img_hash -> sha256 (schema existente)
+        sha256 = img_hash  # compat: mapear img_hash -> sha256
 
     file_name   = _trim(dados.get("file_name"))
     img_b64     = _trim(dados.get("image"))
 
-    # Se não vier descrição_pt, usa a raw
-    if not desc_pt_in:
-        desc_pt_in = desc_raw_in
+    # LLaVA pode vir já separado no payload
+    llava_pt_in = _trim(dados.get("llava_pt"))
+    if not llava_pt_in:
+        llava_pt_in = llava_extra  # separamos do texto misto
 
     base_row = {
         "timestamp": _now_str(),
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object", ""),
-        "descricao": (desc_pt_in or "").replace("\n", "<br>"),
+        "descricao": (yolo_desc_in or "").replace("\n", "<br>"),  # SOMENTE YOLO
         "imagem": img_b64,
         "img_url": "",
         "identificador": dados.get("identificador", "desconhecido"),
         "camera_id": camera_id,
         "local": local,
         "descricao_raw": desc_raw_in,
-        "descricao_pt": desc_pt_in,
+        "descricao_pt": (yolo_desc_in or ""),  # manter espelho da YOLO pura
         "model_yolo": model_yolo,
         "classes": classes,
         "yolo_conf": yolo_conf,
         "yolo_imgsz": yolo_imgsz,
-        "job_id": job_id,
+        "job_id": job_id or sha256 or img_hash,
         "sha256": sha256,
         "file_name": file_name,
-        "llava_pt": desc_pt_in,   # exibe no painel, mesmo quando veio já pronto do GuardDesk
+        "llava_pt": llava_pt_in,   # se vier junto, mostra; se não, ficará vazio e será preenchido no /resposta_ia
     }
 
     with engine.begin() as conn:
-        if job_id:
-            # Tenta atualizar se já existir o job
-            row = conn.execute(text("SELECT id FROM eventos WHERE job_id=:j ORDER BY id DESC LIMIT 1"),
-                               {"j": job_id}).first()
+        if base_row["job_id"]:
+            row = conn.execute(
+                text("SELECT id FROM eventos WHERE job_id=:j ORDER BY id DESC LIMIT 1"),
+                {"j": base_row["job_id"]}
+            ).first()
             if row:
+                # Atualiza somente campos que podem ter sido aprimorados
                 set_parts = []
                 params = {}
                 for k, v in base_row.items():
@@ -481,12 +510,13 @@ def receber_evento():
                     set_parts.append(f"{k}=:{k}")
                     params[k] = v
                 params["id"] = row[0]
-                conn.execute(text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
-                             dict(params, ts=_now_str()))
+                conn.execute(
+                    text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
+                    dict(params, ts=_now_str())
+                )
             else:
                 conn.execute(eventos_tb.insert().values(**base_row))
         else:
-            # Sem job_id: insere normalmente (legado)
             conn.execute(eventos_tb.insert().values(**base_row))
 
         prune_if_needed(conn)
@@ -499,7 +529,7 @@ def receber_resposta_ia():
     """
     Atualiza somente quando houver job_id correspondente.
     Sem job_id, registra a resposta como linha separada "Análise IA".
-    NÃO sobrescreve 'descricao' (que contém o texto YOLO).
+    NÃO sobrescreve 'descricao' (que contém somente o YOLO).
     Apenas escreve 'llava_pt' e metadados.
     """
     dados = request.json or {}
@@ -522,7 +552,6 @@ def receber_resposta_ia():
                 target_id = row[0]
 
         if target_id is None:
-            # Sem job_id (ou não encontrado): não toca em imagens; cria linha separada.
             ev = {
                 "timestamp": _now_str(),
                 "status": "ok",
@@ -545,7 +574,6 @@ def receber_resposta_ia():
             }
             conn.execute(eventos_tb.insert().values(**ev))
         else:
-            # Atualiza APENAS campos do LLaVA; não mexe na 'descricao' (YOLO).
             conn.execute(
                 text("""
                 UPDATE eventos
@@ -762,10 +790,14 @@ def prune_if_needed(conn):
     removed_total = 0
 
     if BACKEND == "sqlite" and DB_PATH:
-        used, total = _disk_usage_for_path(DB_PATH)
-        if total <= 0:
-            return
-        uso = used / total
+        try:
+            st = os.statvfs(os.path.abspath(DB_PATH))
+            total = st.f_frsize * st.f_blocks
+            used  = total - (st.f_frsize * st.f_bavail)
+            uso = used / total if total else 0.0
+        except Exception:
+            uso = 0.0
+
         if uso < PRUNE_THRESHOLD:
             return
         while uso > PRUNE_TARGET:
@@ -781,14 +813,18 @@ def prune_if_needed(conn):
             removed = r.rowcount or 0
             if removed == 0:
                 break
-            if BACKEND == "sqlite":
-                try:
-                    conn.execute(text("VACUUM"))
-                    conn.commit()
-                except Exception:
-                    pass
-            used, total = _disk_usage_for_path(DB_PATH)
-            uso = used / total
+            try:
+                conn.execute(text("VACUUM"))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                st = os.statvfs(os.path.abspath(DB_PATH))
+                total = st.f_frsize * st.f_blocks
+                used  = total - (st.f_frsize * st.f_bavail)
+                uso = used / total if total else 0.0
+            except Exception:
+                break
             removed_total += removed
     else:
         total_rows = conn.execute(text("SELECT COUNT(*) FROM eventos")).scalar_one()
@@ -811,7 +847,7 @@ def prune_if_needed(conn):
             if removed == 0:
                 break
             removed_total += removed
-            to_remove -= removed
+            to_remove -= step
 
     try:
         print(f"[PRUNE] removidos={removed_total}")
