@@ -470,7 +470,7 @@ def receber_evento():
     img_b64     = _trim(dados.get("image"))
 
     # LLaVA pode vir já separado no payload
-    llava_pt_in = _trim(dados.get("llava_pt"))
+    llava_pt_in = _trim(dados.get("llava_pt")) or ""
     if not llava_pt_in:
         llava_pt_in = llava_extra  # separamos do texto misto
 
@@ -478,14 +478,15 @@ def receber_evento():
         "timestamp": _now_str(),
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object", ""),
-        "descricao": (yolo_desc_in or "").replace("\n", "<br>"),  # SOMENTE YOLO
+        # SOMENTE YOLO no campo mostrado no painel (sem LLaVA)
+        "descricao": (yolo_desc_in or "").replace("\n", "<br>"),
         "imagem": img_b64,
         "img_url": "",
         "identificador": dados.get("identificador", "desconhecido"),
         "camera_id": camera_id,
         "local": local,
         "descricao_raw": desc_raw_in,
-        "descricao_pt": (yolo_desc_in or ""),  # manter espelho da YOLO pura
+        "descricao_pt": (yolo_desc_in or ""),  # espelho da YOLO pura
         "model_yolo": model_yolo,
         "classes": classes,
         "yolo_conf": yolo_conf,
@@ -493,43 +494,43 @@ def receber_evento():
         "job_id": job_id or sha256 or img_hash,
         "sha256": sha256,
         "file_name": file_name,
-        "llava_pt": llava_pt_in,   # se vier junto, mostra; senão, fica vazio
+        "llava_pt": llava_pt_in,   # se vier junto, mostra; senão, vazio
     }
 
-        with engine.begin() as conn:
-        def _row_by_keys():
-            # Atualiza somente quando job_id E (sha256 OU file_name) coincidirem.
-            if not base_row["job_id"]:
-                return None
-            if sha256:
-                return conn.execute(
-                    text("""
-                        SELECT id FROM eventos
-                         WHERE job_id = :j AND sha256 = :s
-                         ORDER BY id DESC LIMIT 1
-                    """),
-                    {"j": base_row["job_id"], "s": sha256}
-                ).first()
-            if file_name:
-                return conn.execute(
-                    text("""
-                        SELECT id FROM eventos
-                         WHERE job_id = :j AND file_name = :f
-                         ORDER BY id DESC LIMIT 1
-                    """),
-                    {"j": base_row["job_id"], "f": file_name}
-                ).first()
-            # Sem sha/file_name não há garantia de unicidade ► não atualizar
+    def _row_by_keys(conn):
+        """Atualiza apenas quando houver correlação forte:
+        job_id + (sha256 OU file_name). Caso contrário, faz INSERT."""
+        if not base_row["job_id"]:
             return None
+        if sha256:
+            return conn.execute(
+                text("""
+                    SELECT id FROM eventos
+                     WHERE job_id = :j AND sha256 = :s
+                     ORDER BY id DESC LIMIT 1
+                """),
+                {"j": base_row["job_id"], "s": sha256}
+            ).first()
+        if file_name:
+            return conn.execute(
+                text("""
+                    SELECT id FROM eventos
+                     WHERE job_id = :j AND file_name = :f
+                     ORDER BY id DESC LIMIT 1
+                """),
+                {"j": base_row["job_id"], "f": file_name}
+            ).first()
+        return None
 
-        row = _row_by_keys()
+    with engine.begin() as conn:
+        row = _row_by_keys(conn)
 
         if row:
-            # UPDATE só dos campos que podem variar; preserva timestamp antigo? aqui mantemos timestamp “vivo”.
+            # UPDATE dos campos variáveis + timestamp (mantemos “vivo”)
             set_parts = []
             params = {}
             for k, v in base_row.items():
-                if k in ("timestamp",):  # timestamp vamos atualizar abaixo
+                if k in ("timestamp",):  # atualizaremos abaixo
                     continue
                 set_parts.append(f"{k}=:{k}")
                 params[k] = v
@@ -539,14 +540,18 @@ def receber_evento():
                 text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
                 dict(params, ts=_now_str())
             )
+            ev_id = row[0]
         else:
-            # Nenhuma linha “compatível” encontrada ► INSERT novo
-            conn.execute(eventos_tb.insert().values(**base_row))
-
+            r = conn.execute(eventos_tb.insert().values(**base_row))
+            # SQLite não retorna inserted_primary_key com future=True em todos os casos;
+            # então fazemos um fetch do último id se necessário.
+            try:
+                ev_id = r.inserted_primary_key[0]
+            except Exception:
+                ev_id = conn.execute(text("SELECT last_insert_rowid()")).scalar_one()
         prune_if_needed(conn)
 
-
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "id": int(ev_id)})
 
 
 @app.route("/historico")
