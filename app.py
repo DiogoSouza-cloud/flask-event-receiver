@@ -448,7 +448,7 @@ def receber_evento():
     # Preferir YOLO puro se vier no campo dedicado
     yolo_desc_in = _trim(dados.get("descricao_yolo_pt"))
     desc_raw_in  = _trim(dados.get("descricao_raw") or dados.get("description"))
-    desc_pt_in   = _trim(dados.get("descricao_pt") or desc_raw_in)  # pode vir misto
+    desc_pt_in   = _trim(dados.get("descricao_pt") or dados.get("description") or "")
 
     # Se não veio a YOLO pura, tentar separar da mista
     if not yolo_desc_in and desc_pt_in:
