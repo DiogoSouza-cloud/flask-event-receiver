@@ -3,7 +3,6 @@ import base64
 from io import BytesIO
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
-import re
 
 from flask import Flask, request, jsonify, render_template_string, url_for, send_file, abort
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
@@ -39,28 +38,19 @@ eventos_tb = Table(
     Column("timestamp", Text),
     Column("status", Text),
     Column("objeto", Text),
-    Column("descricao", Text),      # YOLO puro (renderizado no painel)
-    Column("imagem", Text),         # base64 armazenado (legado)
+    Column("descricao", Text),
+    Column("imagem", Text),   # base64 armazenado
     Column("identificador", Text),
-    Column("img_url", Text),
-
+    Column("img_url", Text),  # não usado neste modo
+    # novos campos já suportados no banco
     Column("camera_id", Text),
     Column("local", Text),
-    Column("descricao_raw", Text),  # texto bruto recebido
-    Column("descricao_pt", Text),   # espelho do YOLO puro
+    Column("descricao_raw", Text),
+    Column("descricao_pt", Text),
     Column("model_yolo", Text),
     Column("classes", Text),
     Column("yolo_conf", Text),
     Column("yolo_imgsz", Text),
-
-    # chaves de correlação imagem/análise
-    Column("job_id", Text),
-    Column("sha256", Text),
-    Column("file_name", Text),
-
-    # resposta LLaVA (nunca misturar em 'descricao')
-    Column("llava_pt", Text),
-    Column("dur_llava_ms", Text),
 )
 
 def _ensure_columns():
@@ -79,11 +69,6 @@ def _ensure_columns():
             if "classes"      not in names: add("classes")
             if "yolo_conf"    not in names: add("yolo_conf")
             if "yolo_imgsz"   not in names: add("yolo_imgsz")
-            if "job_id"       not in names: add("job_id")
-            if "sha256"       not in names: add("sha256")
-            if "file_name"    not in names: add("file_name")
-            if "llava_pt"     not in names: add("llava_pt")
-            if "dur_llava_ms" not in names: add("dur_llava_ms")
     else:
         stmts = [
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS img_url TEXT",
@@ -95,11 +80,6 @@ def _ensure_columns():
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS classes TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS yolo_conf TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS yolo_imgsz TEXT",
-            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS job_id TEXT",
-            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS sha256 TEXT",
-            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS file_name TEXT",
-            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS llava_pt TEXT",
-            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS dur_llava_ms TEXT",
         ]
         with engine.begin() as conn:
             for s in stmts:
@@ -119,8 +99,9 @@ def salvar_evento(ev: dict):
         conn.execute(eventos_tb.insert().values(**ev))
         prune_if_needed(conn)
 
-# -------------------- Busca p/ painel --------------------
+# -------------------- Busca para o painel --------------------
 def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
+    # SELECT inclui mais campos para exibição no cartão
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
         "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,",
@@ -130,11 +111,7 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
         "COALESCE(model_yolo,'') AS model_yolo,",
         "COALESCE(classes,'') AS classes,",
         "COALESCE(yolo_conf,'') AS yolo_conf,",
-        "COALESCE(yolo_imgsz,'') AS yolo_imgsz,",
-        "COALESCE(llava_pt,'') AS llava_pt,",
-        "COALESCE(job_id,'') AS job_id,",
-        "COALESCE(sha256,'') AS sha256,",
-        "COALESCE(file_name,'') AS file_name",
+        "COALESCE(yolo_imgsz,'') AS yolo_imgsz",
         "FROM eventos WHERE 1=1",
     ]
     params = {}
@@ -148,12 +125,12 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
                 if BACKEND == "sqlite":
                     expr = (
                         f"(instr(objeto, :{k}) > 0 OR instr(descricao, :{k}) > 0 OR "
-                        f"instr(identificador, :{k}) > 0 OR instr(camera_id, :{k}) > 0 OR instr(local, :{k}) > 0 OR instr(job_id, :{k}) > 0)"
+                        f"instr(identificador, :{k}) > 0 OR instr(camera_id, :{k}) > 0 OR instr(local, :{k}) > 0)"
                     )
                 else:
                     expr = (
                         f"(POSITION(:{k} IN objeto) > 0 OR POSITION(:{k} IN descricao) > 0 OR "
-                        f"POSITION(:{k} IN identificador) > 0 OR POSITION(:{k} IN camera_id) > 0 OR POSITION(:{k} IN local) > 0 OR POSITION(:{k} IN job_id) > 0)"
+                        f"POSITION(:{k} IN identificador) > 0 OR POSITION(:{k} IN camera_id) > 0 OR POSITION(:{k} IN local) > 0)"
                     )
                 or_parts.append(expr)
                 params[k] = t
@@ -185,13 +162,11 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
             tem_img=bool(r[6]), img_url=r[7] or "",
             camera_id=r[8] or "", local=r[9] or "",
             model_yolo=r[10] or "", classes=r[11] or "",
-            yolo_conf=r[12] or "", yolo_imgsz=r[13] or "",
-            llava_pt=r[14] or "",
-            job_id=r[15] or "", sha256=r[16] or "", file_name=r[17] or ""
+            yolo_conf=r[12] or "", yolo_imgsz=r[13] or ""
         ))
     return evs
 
-# -------------------- Template --------------------
+# -------------------- Template (facelift) --------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -200,6 +175,7 @@ HTML_TEMPLATE = """
   <title>{{ page_title }}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <script>
+    // Auto-refresh suave
     setInterval(() => {
       const t = document.activeElement && document.activeElement.tagName;
       if (!['INPUT','TEXTAREA','SELECT','BUTTON'].includes(t)) location.reload();
@@ -207,37 +183,80 @@ HTML_TEMPLATE = """
   </script>
   <style>
     :root{
-      --bg: #f7f7f8; --surface: #ffffff; --ink: #101010;
-      --muted:#6b7280; --line:#e5e7eb; --brand:#111827;
-      --danger:#dc2626; --ok:#16a34a; --chip:#eef2ff; --chip-ink:#3730a3;
+      --bg: #f7f7f8;
+      --surface: #ffffff;
+      --ink: #101010;
+      --muted:#6b7280;
+      --line:#e5e7eb;
+      --brand:#111827;
+      --danger:#dc2626;
+      --ok:#16a34a;
+      --chip:#eef2ff;
+      --chip-ink:#3730a3;
     }
     *{box-sizing:border-box}
     html,body{height:100%}
-    body{ margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; color:var(--ink); background:var(--bg); }
-    header{ position:sticky; top:0; z-index:10; background:linear-gradient(180deg,#ffffff 0%,#fafafa 100%); border-bottom:1px solid var(--line);
-      display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; }
+    body{
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      color:var(--ink); background:var(--bg);
+    }
+    header{
+      position:sticky; top:0; z-index:10;
+      background:linear-gradient(180deg,#ffffff 0%,#fafafa 100%);
+      border-bottom:1px solid var(--line);
+      display:flex; align-items:center; justify-content:space-between; gap:16px;
+      padding:12px 20px;
+    }
     .brand{display:flex; align-items:center; gap:14px}
-    .logo-iaprotect{height:28px} .logo-rowau{height:34px}
+    .logo-iaprotect{height:28px}
+    .logo-rowau{height:34px}
     h1{margin:0; font-size:20px; color:var(--brand); font-weight:700}
+
     .wrap{max-width:1080px; margin:0 auto; padding:18px}
-    .toolbar{ position:sticky; top:64px; z-index:9; background:var(--surface); border:1px solid var(--line);
-      padding:10px; border-radius:10px; box-shadow:0 2px 6px rgba(0,0,0,.04); display:flex; gap:8px; align-items:center; margin-bottom:16px; }
-    .toolbar input[type="text"], .toolbar input[type="date"]{ border:1px solid var(--line); background:#fff; color:var(--ink);
-      padding:8px 10px; border-radius:8px; outline:none; min-width:220px; }
-    .toolbar button{ border:1px solid var(--line); background:#111827; color:#fff; padding:8px 14px; border-radius:8px; cursor:pointer; }
+    .toolbar{
+      position:sticky; top:64px; z-index:9;
+      background:var(--surface); border:1px solid var(--line);
+      padding:10px; border-radius:10px; box-shadow:0 2px 6px rgba(0,0,0,.04);
+      display:flex; gap:8px; align-items:center;
+      margin-bottom:16px;
+    }
+    .toolbar input[type="text"], .toolbar input[type="date"]{
+      border:1px solid var(--line); background:#fff; color:var(--ink);
+      padding:8px 10px; border-radius:8px; outline:none; min-width:220px;
+    }
+    .toolbar button{
+      border:1px solid var(--line); background:#111827; color:#fff;
+      padding:8px 14px; border-radius:8px; cursor:pointer;
+    }
     .grid{display:grid; grid-template-columns: 280px 1fr; gap:16px}
     @media (max-width: 860px){ .grid{ grid-template-columns: 1fr; } }
-    .thumb{ width:100%; aspect-ratio: 4/3; object-fit:cover; border:1px solid var(--line); border-radius:10px; background:#f3f4f6; }
-    .card{ background:var(--surface); border:1px solid var(--line); border-left:6px solid transparent; border-radius:12px; padding:14px; margin:14px 0; }
+
+    .thumb{
+      width:100%; aspect-ratio: 4/3; object-fit:cover;
+      border:1px solid var(--line); border-radius:10px; background:#f3f4f6;
+    }
+
+    .card{
+      background:var(--surface);
+      border:1px solid var(--line);
+      border-left:6px solid transparent;
+      border-radius:12px; padding:14px; margin:14px 0;
+    }
     .card.alerta{ border-left-color: var(--danger); }
     .meta{ color:var(--muted); font-size:12.5px; margin-bottom:6px }
-    .kv{ margin:4px 0; font-size:14.5px } .kv b{ color:#374151; display:inline-block; min-width:148px }
+    .kv{ margin:4px 0; font-size:14.5px }
+    .kv b{ color:#374151; display:inline-block; min-width:148px }
     .ctx{ margin-top:8px; line-height:1.45 }
-    .badge{ display:inline-block; font-size:12px; padding:3px 8px; border-radius:999px; border:1px solid var(--line); background:#fff; color:#374151; margin-left:8px; }
+    .badge{
+      display:inline-block; font-size:12px; padding:3px 8px; border-radius:999px;
+      border:1px solid var(--line); background:#fff; color:#374151; margin-left:8px;
+    }
     .badge.alerta{ background:#fee2e2; color:#991b1b; border-color:#fecaca }
     .chips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:6px }
     .chip{ background:var(--chip); color:var(--chip-ink); border:1px solid #e0e7ff; padding:3px 8px; border-radius:999px; font-size:12px }
-    .pager{ display:flex; gap:12px; margin-top:18px } .pager a{ color:#2563eb; text-decoration:none; font-size:14px }
+
+    .pager{ display:flex; gap:12px; margin-top:18px }
+    .pager a{ color:#2563eb; text-decoration:none; font-size:14px }
     .sep{ height:1px; background:var(--line); margin:10px 0 }
   </style>
 </head>
@@ -261,7 +280,7 @@ HTML_TEMPLATE = """
     </form>
 
     {% for e in eventos %}
-      <div class="card {% if e.status.lower() == 'alerta' %}alerta{% endif %}">
+      <div class="card {% if e.status.lower() == 'alerta' or e.status.lower() == 'alerta' %}alerta{% elif e.status.lower() == 'alerta' %}alerta{% endif %}">
         <div class="grid">
           <div>
             {% if e.tem_img %}
@@ -272,12 +291,6 @@ HTML_TEMPLATE = """
           </div>
           <div>
             <div class="meta">{{ e.timestamp }}</div>
-
-            <div class="kv"><b>Evento ID:</b> {{ e.id }}
-              {% if e.job_id %}<span class="badge">JOB {{ e.job_id }}</span>{% endif %}
-              {% if e.file_name %}<span class="badge">FILE {{ e.file_name }}</span>{% endif %}
-              {% if e.sha256 %}<span class="badge">SHA {{ e.sha256[:10] }}…</span>{% endif %}
-            </div>
 
             <div class="kv"><b>Identificador:</b> {{ e.identificador }}
               <span class="badge {% if e.status.lower() == 'alerta' %}alerta{% endif %}">{{ e.status|capitalize }}</span>
@@ -306,10 +319,6 @@ HTML_TEMPLATE = """
             <div class="sep"></div>
             <div class="ctx">
               <b>Analisar objeto:</b> {{ e.descricao|safe }}
-              {% if e.llava_pt %}
-                <div class="sep"></div>
-                <div class="ctx"><b>LLaVA-PT:</b> {{ e.llava_pt }}</div>
-              {% endif %}
             </div>
           </div>
         </div>
@@ -408,151 +417,75 @@ def img(ev_id: int):
         abort(404)
     return send_file(BytesIO(b), mimetype="image/jpeg", max_age=3600)
 
-# -------------------- Helpers de parsing --------------------
-_LAVA_MARKER = re.compile(r"(?:^|\n)\s*🌐\s*Analisar\s+local:\s*", re.IGNORECASE)
-
-def _split_yolo_llava(desc: str):
-    """
-    Se a descrição vier misturada (YOLO + '🌐 Analisar local: ...'),
-    devolve (yolo_only, llava_text).
-    """
-    if not desc:
-        return "", ""
-    m = _LAVA_MARKER.split(desc, maxsplit=1)
-    if len(m) == 1:
-        return desc.strip(), ""
-    yolo = m[0].strip()
-    llava = m[1].strip()
-    return yolo, llava
-
 # -------------------- Rotas principais --------------------
 @app.route("/")
 def index():
     return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas | GET /api/events | GET /api/stats | GET /admin/reset?key=..."
 
-def _now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-def _trim(s):
-    return (s or "").strip()
-
 @app.route("/evento", methods=["POST"])
 def receber_evento():
     dados = request.json or {}
 
-    # Novos + legado
-    job_id      = _trim(dados.get("job_id"))
-    camera_id   = _trim(dados.get("camera_id"))
-    local       = _trim(dados.get("local"))
+    # Campos novos e legado
+    camera_id    = (dados.get("camera_id") or "").strip()
+    local        = (dados.get("local") or "").strip()
 
-    # Preferir YOLO puro se vier no campo dedicado
-    yolo_desc_in = _trim(dados.get("descricao_yolo_pt"))
-    desc_raw_in  = _trim(dados.get("descricao_raw") or dados.get("description"))
-    desc_pt_in   = _trim(dados.get("descricao_pt") or desc_raw_in)  # pode vir misto
+    desc_raw_in  = (dados.get("descricao_raw") or dados.get("description") or "").strip()
+    desc_pt_in   = (dados.get("descricao_pt")  or "").strip()
+    if not desc_pt_in:
+        desc_pt_in = desc_raw_in
 
-    # Se não veio a YOLO pura, tentar separar da mista
-    if not yolo_desc_in and desc_pt_in:
-        yolo_desc_in, llava_extra = _split_yolo_llava(desc_pt_in)
-    else:
-        llava_extra = ""
+    model_yolo  = (dados.get("model_yolo") or dados.get("model") or "").strip()
+    classes     = (dados.get("classes") or "").strip()
+    yolo_conf   = str(dados.get("yolo_conf") or dados.get("conf") or "")
+    yolo_imgsz  = str(dados.get("yolo_imgsz") or dados.get("imgsz") or "")
 
-    model_yolo  = _trim(dados.get("model_yolo") or dados.get("model"))
-    classes     = _trim(dados.get("classes"))
-    yolo_conf   = _trim(str(dados.get("yolo_conf") or dados.get("conf") or ""))
-    yolo_imgsz  = _trim(str(dados.get("yolo_imgsz") or dados.get("imgsz") or ""))
+    img_b64 = (dados.get("image") or "").strip()
 
-    sha256      = _trim(dados.get("sha256"))
-    img_hash    = _trim(dados.get("img_hash"))
-    if not sha256 and img_hash:
-        sha256 = img_hash  # compat: mapear img_hash -> sha256
-
-    file_name   = _trim(dados.get("file_name"))
-    img_b64     = _trim(dados.get("image"))
-
-    # LLaVA pode vir já separado no payload
-    llava_pt_in = _trim(dados.get("llava_pt")) or ""
-    if not llava_pt_in:
-        llava_pt_in = llava_extra  # separamos do texto misto
-
-    base_row = {
-        "timestamp": _now_str(),
+    evento = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object", ""),
-        # SOMENTE YOLO no campo mostrado no painel (sem LLaVA)
-        "descricao": (yolo_desc_in or "").replace("\n", "<br>"),
+        "descricao": (desc_pt_in or "").replace("\n", "<br>"),
         "imagem": img_b64,
         "img_url": "",
         "identificador": dados.get("identificador", "desconhecido"),
+
+        # extras
         "camera_id": camera_id,
         "local": local,
         "descricao_raw": desc_raw_in,
-        "descricao_pt": (yolo_desc_in or ""),  # espelho da YOLO pura
+        "descricao_pt": desc_pt_in,
         "model_yolo": model_yolo,
         "classes": classes,
         "yolo_conf": yolo_conf,
         "yolo_imgsz": yolo_imgsz,
-        "job_id": job_id or sha256 or img_hash,
-        "sha256": sha256,
-        "file_name": file_name,
-        "llava_pt": llava_pt_in,   # se vier junto, mostra; senão, vazio
     }
+    salvar_evento(evento)
+    return jsonify({"ok": True})
 
-    def _row_by_keys(conn):
-        """Atualiza apenas quando houver correlação forte:
-        job_id + (sha256 OU file_name). Caso contrário, faz INSERT."""
-        if not base_row["job_id"]:
-            return None
-        if sha256:
-            return conn.execute(
-                text("""
-                    SELECT id FROM eventos
-                     WHERE job_id = :j AND sha256 = :s
-                     ORDER BY id DESC LIMIT 1
-                """),
-                {"j": base_row["job_id"], "s": sha256}
-            ).first()
-        if file_name:
-            return conn.execute(
-                text("""
-                    SELECT id FROM eventos
-                     WHERE job_id = :j AND file_name = :f
-                     ORDER BY id DESC LIMIT 1
-                """),
-                {"j": base_row["job_id"], "f": file_name}
-            ).first()
-        return None
-
-    with engine.begin() as conn:
-        row = _row_by_keys(conn)
-
-        if row:
-            # UPDATE dos campos variáveis + timestamp (mantemos “vivo”)
-            set_parts = []
-            params = {}
-            for k, v in base_row.items():
-                if k in ("timestamp",):  # atualizaremos abaixo
-                    continue
-                set_parts.append(f"{k}=:{k}")
-                params[k] = v
-            params["id"] = row[0]
-
-            conn.execute(
-                text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
-                dict(params, ts=_now_str())
-            )
-            ev_id = row[0]
-        else:
-            r = conn.execute(eventos_tb.insert().values(**base_row))
-            # SQLite não retorna inserted_primary_key com future=True em todos os casos;
-            # então fazemos um fetch do último id se necessário.
-            try:
-                ev_id = r.inserted_primary_key[0]
-            except Exception:
-                ev_id = conn.execute(text("SELECT last_insert_rowid()")).scalar_one()
-        prune_if_needed(conn)
-
-    return jsonify({"ok": True, "id": int(ev_id)})
-
+@app.route("/resposta_ia", methods=["POST"])
+def receber_resposta_ia():
+    dados = request.json or {}
+    evento = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "ok",
+        "objeto": "Análise IA",
+        "descricao": (dados.get("resposta", "") or "").replace("\n", "<br>"),
+        "imagem": "",
+        "img_url": "",
+        "identificador": dados.get("identificador", "desconhecido"),
+        "camera_id": (dados.get("camera_id") or "").strip(),
+        "local": (dados.get("local") or "").strip(),
+        "descricao_raw": "",
+        "descricao_pt": "",
+        "model_yolo": "",
+        "classes": "",
+        "yolo_conf": "",
+        "yolo_imgsz": "",
+    }
+    salvar_evento(evento)
+    return jsonify({"ok": True})
 
 @app.route("/historico")
 def historico():
@@ -754,14 +687,10 @@ def prune_if_needed(conn):
     removed_total = 0
 
     if BACKEND == "sqlite" and DB_PATH:
-        try:
-            st = os.statvfs(os.path.abspath(DB_PATH))
-            total = st.f_frsize * st.f_blocks
-            used  = total - (st.f_frsize * st.f_bavail)
-            uso = used / total if total else 0.0
-        except Exception:
-            uso = 0.0
-
+        used, total = _disk_usage_for_path(DB_PATH)
+        if total <= 0:
+            return
+        uso = used / total
         if uso < PRUNE_THRESHOLD:
             return
         while uso > PRUNE_TARGET:
@@ -777,18 +706,14 @@ def prune_if_needed(conn):
             removed = r.rowcount or 0
             if removed == 0:
                 break
-            try:
-                conn.execute(text("VACUUM"))
-                conn.commit()
-            except Exception:
-                pass
-            try:
-                st = os.statvfs(os.path.abspath(DB_PATH))
-                total = st.f_frsize * st.f_blocks
-                used  = total - (st.f_frsize * st.f_bavail)
-                uso = used / total if total else 0.0
-            except Exception:
-                break
+            if BACKEND == "sqlite":
+                try:
+                    conn.execute(text("VACUUM"))
+                    conn.commit()
+                except Exception:
+                    pass
+            used, total = _disk_usage_for_path(DB_PATH)
+            uso = used / total
             removed_total += removed
     else:
         total_rows = conn.execute(text("SELECT COUNT(*) FROM eventos")).scalar_one()
@@ -811,7 +736,7 @@ def prune_if_needed(conn):
             if removed == 0:
                 break
             removed_total += removed
-            to_remove -= step
+            to_remove -= removed
 
     try:
         print(f"[PRUNE] removidos={removed_total}")
