@@ -39,26 +39,26 @@ eventos_tb = Table(
     Column("timestamp", Text),
     Column("status", Text),
     Column("objeto", Text),
-    Column("descricao", Text),      # <-- apenas YOLO no painel
+    Column("descricao", Text),      # YOLO puro (renderizado no painel)
     Column("imagem", Text),         # base64 armazenado (legado)
     Column("identificador", Text),
     Column("img_url", Text),
 
     Column("camera_id", Text),
     Column("local", Text),
-    Column("descricao_raw", Text),  # texto bruto (se preferir guardar)
+    Column("descricao_raw", Text),  # texto bruto recebido
     Column("descricao_pt", Text),   # espelho do YOLO puro
     Column("model_yolo", Text),
     Column("classes", Text),
     Column("yolo_conf", Text),
     Column("yolo_imgsz", Text),
 
-    # colunas de correlação
-    Column("job_id", Text),         # correlação YOLO <-> LLaVA
+    # chaves de correlação imagem/análise
+    Column("job_id", Text),
     Column("sha256", Text),
     Column("file_name", Text),
 
-    # resposta LLaVA (somente aqui)
+    # resposta LLaVA (nunca misturar em 'descricao')
     Column("llava_pt", Text),
     Column("dur_llava_ms", Text),
 )
@@ -493,7 +493,7 @@ def receber_evento():
         "job_id": job_id or sha256 or img_hash,
         "sha256": sha256,
         "file_name": file_name,
-        "llava_pt": llava_pt_in,   # se vier junto, mostra; se não, ficará vazio e será preenchido no /resposta_ia
+        "llava_pt": llava_pt_in,   # se vier junto, mostra; senão, fica vazio
     }
 
     with engine.begin() as conn:
@@ -503,7 +503,6 @@ def receber_evento():
                 {"j": base_row["job_id"]}
             ).first()
             if row:
-                # Atualiza somente campos que podem ter sido aprimorados
                 set_parts = []
                 params = {}
                 for k, v in base_row.items():
