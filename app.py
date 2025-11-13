@@ -496,97 +496,55 @@ def receber_evento():
         "llava_pt": llava_pt_in,   # se vier junto, mostra; senão, fica vazio
     }
 
-    with engine.begin() as conn:
-        if base_row["job_id"]:
-            row = conn.execute(
-                text("SELECT id FROM eventos WHERE job_id=:j ORDER BY id DESC LIMIT 1"),
-                {"j": base_row["job_id"]}
-            ).first()
-            if row:
-                set_parts = []
-                params = {}
-                for k, v in base_row.items():
-                    if k in ("timestamp",):
-                        continue
-                    set_parts.append(f"{k}=:{k}")
-                    params[k] = v
-                params["id"] = row[0]
-                conn.execute(
-                    text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
-                    dict(params, ts=_now_str())
-                )
-            else:
-                conn.execute(eventos_tb.insert().values(**base_row))
+        with engine.begin() as conn:
+        def _row_by_keys():
+            # Atualiza somente quando job_id E (sha256 OU file_name) coincidirem.
+            if not base_row["job_id"]:
+                return None
+            if sha256:
+                return conn.execute(
+                    text("""
+                        SELECT id FROM eventos
+                         WHERE job_id = :j AND sha256 = :s
+                         ORDER BY id DESC LIMIT 1
+                    """),
+                    {"j": base_row["job_id"], "s": sha256}
+                ).first()
+            if file_name:
+                return conn.execute(
+                    text("""
+                        SELECT id FROM eventos
+                         WHERE job_id = :j AND file_name = :f
+                         ORDER BY id DESC LIMIT 1
+                    """),
+                    {"j": base_row["job_id"], "f": file_name}
+                ).first()
+            # Sem sha/file_name não há garantia de unicidade ► não atualizar
+            return None
+
+        row = _row_by_keys()
+
+        if row:
+            # UPDATE só dos campos que podem variar; preserva timestamp antigo? aqui mantemos timestamp “vivo”.
+            set_parts = []
+            params = {}
+            for k, v in base_row.items():
+                if k in ("timestamp",):  # timestamp vamos atualizar abaixo
+                    continue
+                set_parts.append(f"{k}=:{k}")
+                params[k] = v
+            params["id"] = row[0]
+
+            conn.execute(
+                text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
+                dict(params, ts=_now_str())
+            )
         else:
+            # Nenhuma linha “compatível” encontrada ► INSERT novo
             conn.execute(eventos_tb.insert().values(**base_row))
 
         prune_if_needed(conn)
 
-    return jsonify({"ok": True})
-
-
-@app.route("/resposta_ia", methods=["POST"])
-def receber_resposta_ia():
-    """
-    Atualiza somente quando houver job_id correspondente.
-    Sem job_id, registra a resposta como linha separada "Análise IA".
-    NÃO sobrescreve 'descricao' (que contém somente o YOLO).
-    Apenas escreve 'llava_pt' e metadados.
-    """
-    dados = request.json or {}
-    job_id     = _trim(dados.get("job_id"))
-    ident      = _trim(dados.get("identificador"))
-    camera_id  = _trim(dados.get("camera_id"))
-    local      = _trim(dados.get("local"))
-    llava_pt   = _trim(dados.get("resposta") or dados.get("llava_pt"))
-    dur_ms     = _trim(str(dados.get("dur_llava_ms") or ""))
-
-    with engine.begin() as conn:
-        target_id = None
-
-        if job_id:
-            row = conn.execute(
-                text("SELECT id FROM eventos WHERE job_id=:j ORDER BY id DESC LIMIT 1"),
-                {"j": job_id}
-            ).first()
-            if row:
-                target_id = row[0]
-
-        if target_id is None:
-            ev = {
-                "timestamp": _now_str(),
-                "status": "ok",
-                "objeto": "Análise IA",
-                "descricao": (llava_pt or "").replace("\n", "<br>"),
-                "imagem": "",
-                "img_url": "",
-                "identificador": ident or "desconhecido",
-                "camera_id": camera_id,
-                "local": local,
-                "descricao_raw": "",
-                "descricao_pt": "",
-                "model_yolo": "",
-                "classes": "",
-                "yolo_conf": "",
-                "yolo_imgsz": "",
-                "job_id": job_id,
-                "llava_pt": llava_pt,
-                "dur_llava_ms": dur_ms,
-            }
-            conn.execute(eventos_tb.insert().values(**ev))
-        else:
-            conn.execute(
-                text("""
-                UPDATE eventos
-                   SET llava_pt=:llp,
-                       dur_llava_ms=:dur,
-                       local=COALESCE(NULLIF(:loc,''), local)
-                 WHERE id=:id
-                """),
-                {"llp": llava_pt, "dur": dur_ms, "loc": local, "id": target_id}
-            )
-
-        prune_if_needed(conn)
 
     return jsonify({"ok": True})
 
