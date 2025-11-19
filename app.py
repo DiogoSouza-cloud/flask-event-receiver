@@ -46,6 +46,7 @@ eventos_tb = Table(
     Column("img_url", Text),
 
     Column("camera_id", Text),
+    Column("camera_name", Text),    # << NOME DA CÂMERA
     Column("local", Text),
     Column("descricao_raw", Text),  # texto bruto recebido
     Column("descricao_pt", Text),   # espelho do YOLO puro
@@ -71,24 +72,26 @@ def _ensure_columns():
             cols = conn.execute(text("PRAGMA table_info(eventos)")).all()
             names = {c[1] for c in cols}
             def add(colname): conn.execute(text(f"ALTER TABLE eventos ADD COLUMN {colname} TEXT"))
-            if "img_url"      not in names: add("img_url")
-            if "camera_id"    not in names: add("camera_id")
-            if "local"        not in names: add("local")
-            if "descricao_raw"not in names: add("descricao_raw")
-            if "descricao_pt" not in names: add("descricao_pt")
-            if "model_yolo"   not in names: add("model_yolo")
-            if "classes"      not in names: add("classes")
-            if "yolo_conf"    not in names: add("yolo_conf")
-            if "yolo_imgsz"   not in names: add("yolo_imgsz")
-            if "job_id"       not in names: add("job_id")
-            if "sha256"       not in names: add("sha256")
-            if "file_name"    not in names: add("file_name")
-            if "llava_pt"     not in names: add("llava_pt")
-            if "dur_llava_ms" not in names: add("dur_llava_ms")
+            if "img_url"       not in names: add("img_url")
+            if "camera_id"     not in names: add("camera_id")
+            if "camera_name"   not in names: add("camera_name")
+            if "local"         not in names: add("local")
+            if "descricao_raw" not in names: add("descricao_raw")
+            if "descricao_pt"  not in names: add("descricao_pt")
+            if "model_yolo"    not in names: add("model_yolo")
+            if "classes"       not in names: add("classes")
+            if "yolo_conf"     not in names: add("yolo_conf")
+            if "yolo_imgsz"    not in names: add("yolo_imgsz")
+            if "job_id"        not in names: add("job_id")
+            if "sha256"        not in names: add("sha256")
+            if "file_name"     not in names: add("file_name")
+            if "llava_pt"      not in names: add("llava_pt")
+            if "dur_llava_ms"  not in names: add("dur_llava_ms")
     else:
         stmts = [
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS img_url TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS camera_id TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS camera_name TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS local TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS descricao_raw TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS descricao_pt TEXT",
@@ -127,6 +130,7 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
         "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,",
         "COALESCE(img_url,'') AS img_url,",
         "COALESCE(camera_id,'') AS camera_id,",
+        "COALESCE(camera_name,'') AS camera_name,",
         "COALESCE(local,'') AS local,",
         "COALESCE(model_yolo,'') AS model_yolo,",
         "COALESCE(classes,'') AS classes,",
@@ -149,12 +153,14 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
                 if BACKEND == "sqlite":
                     expr = (
                         f"(instr(objeto, :{k}) > 0 OR instr(descricao, :{k}) > 0 OR "
-                        f"instr(identificador, :{k}) > 0 OR instr(camera_id, :{k}) > 0 OR instr(local, :{k}) > 0 OR instr(job_id, :{k}) > 0)"
+                        f"instr(identificador, :{k}) > 0 OR instr(camera_id, :{k}) > 0 OR "
+                        f"instr(camera_name, :{k}) > 0 OR instr(local, :{k}) > 0 OR instr(job_id, :{k}) > 0)"
                     )
                 else:
                     expr = (
                         f"(POSITION(:{k} IN objeto) > 0 OR POSITION(:{k} IN descricao) > 0 OR "
-                        f"POSITION(:{k} IN identificador) > 0 OR POSITION(:{k} IN camera_id) > 0 OR POSITION(:{k} IN local) > 0 OR POSITION(:{k} IN job_id) > 0)"
+                        f"POSITION(:{k} IN identificador) > 0 OR POSITION(:{k} IN camera_id) > 0 OR "
+                        f"POSITION(:{k} IN camera_name) > 0 OR POSITION(:{k} IN local) > 0 OR POSITION(:{k} IN job_id) > 0)"
                     )
                 or_parts.append(expr)
                 params[k] = t
@@ -184,15 +190,17 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
             id=r[0], timestamp=r[1], status=r[2], objeto=r[3],
             descricao=r[4], identificador=r[5],
             tem_img=bool(r[6]), img_url=r[7] or "",
-            camera_id=r[8] or "", local=r[9] or "",
-            model_yolo=r[10] or "", classes=r[11] or "",
-            yolo_conf=r[12] or "", yolo_imgsz=r[13] or "",
-            llava_pt=r[14] or "",
-            job_id=r[15] or "", sha256=r[16] or "", file_name=r[17] or ""
+            camera_id=r[8] or "",
+            camera_name=r[9] or "",
+            local=r[10] or "",
+            model_yolo=r[11] or "", classes=r[12] or "",
+            yolo_conf=r[13] or "", yolo_imgsz=r[14] or "",
+            llava_pt=r[15] or "",
+            job_id=r[16] or "", sha256=r[17] or "", file_name=r[18] or ""
         ))
     return evs
 
-# -------------------- Template (HTML omitido por brevidade) --------------------
+# -------------------- Template --------------------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -285,7 +293,14 @@ HTML_TEMPLATE = """
             </div>
 
             <div class="kv"><b>Objeto:</b> {{ e.objeto }}</div>
-            <div class="kv"><b>CÂMERA:</b> {{ e.camera_id or '-' }}</div>
+
+            <div class="kv"><b>CÂMERA:</b>
+              {{ e.camera_id or '-' }}
+              {% if e.camera_name %}
+                – {{ e.camera_name }}
+              {% endif %}
+            </div>
+
             <div class="kv"><b>Local:</b> {{ e.local or '-' }}</div>
 
             {% if e.model_yolo or e.classes %}
@@ -440,6 +455,7 @@ def receber_evento():
     # Novos + legado
     job_id      = _trim(dados.get("job_id"))
     camera_id   = _trim(dados.get("camera_id"))
+    camera_name = _trim(dados.get("camera_name"))
     local       = _trim(dados.get("local"))
 
     # Preferir YOLO puro se vier no campo dedicado
@@ -474,6 +490,7 @@ def receber_evento():
         "img_url": "",
         "identificador": dados.get("identificador", "desconhecido"),
         "camera_id": camera_id,
+        "camera_name": camera_name,
         "local": local,
         "descricao_raw": desc_raw_in,
         "descricao_pt": (yolo_desc_in or ""),
@@ -557,6 +574,7 @@ def receber_resposta_ia():
     job_id     = _trim(dados.get("job_id"))
     ident      = _trim(dados.get("identificador"))
     camera_id  = _trim(dados.get("camera_id"))
+    camera_name = _trim(dados.get("camera_name"))
     local      = _trim(dados.get("local"))
     llava_pt   = _trim(dados.get("resposta") or dados.get("llava_pt"))
     dur_ms     = _trim(str(dados.get("dur_llava_ms") or ""))
@@ -581,6 +599,7 @@ def receber_resposta_ia():
                 "img_url": "",
                 "identificador": ident or "desconhecido",
                 "camera_id": camera_id,
+                "camera_name": camera_name,
                 "local": local,
                 "descricao_raw": "",
                 "descricao_pt": "",
@@ -599,10 +618,11 @@ def receber_resposta_ia():
                 UPDATE eventos
                    SET llava_pt=:llp,
                        dur_llava_ms=:dur,
-                       local=COALESCE(NULLIF(:loc,''), local)
+                       local=COALESCE(NULLIF(:loc,''), local),
+                       camera_name=COALESCE(NULLIF(:cam_name,''), camera_name)
                  WHERE id=:id
                 """),
-                {"llp": llava_pt, "dur": dur_ms, "loc": local, "id": target_id}
+                {"llp": llava_pt, "dur": dur_ms, "loc": local, "cam_name": camera_name, "id": target_id}
             )
 
         prune_if_needed(conn)
@@ -696,7 +716,7 @@ def api_events():
         params["st"] = status
 
     sql = f"""
-    SELECT id, timestamp, status, identificador, camera_id, local, objeto,
+    SELECT id, timestamp, status, identificador, camera_id, camera_name, local, objeto,
            descricao, COALESCE(descricao_raw,''), COALESCE(descricao_pt,''),
            COALESCE(model_yolo,''), COALESCE(classes,''), COALESCE(yolo_conf,''), COALESCE(yolo_imgsz,''),
            CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS has_img
@@ -718,17 +738,18 @@ def api_events():
             "status": r[2],
             "identificador": r[3],
             "camera_id": r[4] or "",
-            "local": r[5] or "",
-            "objeto": r[6] or "",
-            "descricao": r[7] or "",
-            "descricao_raw": r[8] or "",
-            "descricao_pt": r[9] or "",
-            "model_yolo": r[10] or "",
-            "classes": r[11] or "",
-            "yolo_conf": r[12] or "",
-            "yolo_imgsz": r[13] or "",
-            "has_img": bool(r[14]),
-            "image_url": url_for("img", ev_id=r[0], _external=True) if r[14] else ""
+            "camera_name": r[5] or "",
+            "local": r[6] or "",
+            "objeto": r[7] or "",
+            "descricao": r[8] or "",
+            "descricao_raw": r[9] or "",
+            "descricao_pt": r[10] or "",
+            "model_yolo": r[11] or "",
+            "classes": r[12] or "",
+            "yolo_conf": r[13] or "",
+            "yolo_imgsz": r[14] or "",
+            "has_img": bool(r[15]),
+            "image_url": url_for("img", ev_id=r[0], _external=True) if r[15] else ""
         })
     return jsonify(out)
 
