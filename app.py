@@ -309,13 +309,13 @@ HTML_TEMPLATE = """
                 {% if e.model_yolo %} modelo {{ e.model_yolo }}{% endif %}
                 {% if e.yolo_conf %} · conf {{ e.yolo_conf }}{% endif %}
                 {% if e.yolo_imgsz %} · imgsz {{ e.yolo_imgsz }}{% endif %}
-              </div> #}
+              </div> 
               {% if e.classes %}
                 <div class="chips">
                   {% for c in e.classes.split(',') %}
                     <span class="chip">{{ c.strip() }}</span>
                   {% endfor %}
-                </div>
+                </div> #}
               {% endif %}
             {% endif %}
 
