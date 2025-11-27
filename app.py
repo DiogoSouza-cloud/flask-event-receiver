@@ -302,7 +302,8 @@ HTML_TEMPLATE = """
             </div>
 
             <div class="kv"><b>Local:</b> {{ e.local or '-' }}</div>
-
+            
+            {#
             {% if e.model_yolo or e.classes %}
               <div class="sep"></div>
               <div class="kv"><b>YOLO:</b>
@@ -318,10 +319,11 @@ HTML_TEMPLATE = """
                 </div>
               {% endif %}
             {% endif %}
-
+            #}
+            
             <div class="sep"></div>
             <div class="ctx">
-              <b>Analisar objeto:</b> {{ e.descricao|safe }}
+              <b>Analise objeto:</b> {{ e.descricao|safe }}
               {% if e.llava_pt %}
                 <div class="sep"></div>
                 <div class="ctx"><b>Diagnóstico:</b> {{ e.llava_pt }}</div>
