@@ -305,7 +305,7 @@ HTML_TEMPLATE = """
 
             {% if e.model_yolo or e.classes %}
               <div class="sep"></div>
-              <div class="kv"><b>Detectado:</b> {{ e.objeto }}</div>
+              <div class="kv"><b>YOLO:</b>
                 {% if e.model_yolo %} modelo {{ e.model_yolo }}{% endif %}
                 {% if e.yolo_conf %} · conf {{ e.yolo_conf }}{% endif %}
                 {% if e.yolo_imgsz %} · imgsz {{ e.yolo_imgsz }}{% endif %}
