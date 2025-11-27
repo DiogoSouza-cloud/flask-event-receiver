@@ -324,7 +324,7 @@ HTML_TEMPLATE = """
               <b>Analisar objeto:</b> {{ e.descricao|safe }}
               {% if e.llava_pt %}
                 <div class="sep"></div>
-                <div class="ctx"><b>LLaVA-PT:</b> {{ e.llava_pt }}</div>
+                <div class="ctx"><b>Diagnóstico:</b> {{ e.llava_pt }}</div>
               {% endif %}
             </div>
           </div>
