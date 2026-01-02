@@ -19,6 +19,8 @@ PRUNE_BATCH     = int(os.getenv("PRUNE_BATCH", "1000"))
 MAX_ROWS        = int(os.getenv("MAX_ROWS", "500000"))
 UPDATE_WINDOW_SEC = int(os.getenv("UPDATE_WINDOW_SEC", "15"))
 
+CONFIRM_VALUE = "SIM"
+
 engine = create_engine(DB_URL, pool_pre_ping=True, future=True)
 BACKEND = engine.url.get_backend_name()
 
@@ -63,6 +65,12 @@ eventos_tb = Table(
     # resposta LLaVA (nunca misturar em 'descricao')
     Column("llava_pt", Text),
     Column("dur_llava_ms", Text),
+
+    # confirmação do operador (NOVO)
+    Column("confirmado", Text),
+    Column("relato_operador", Text),
+    Column("confirmado_por", Text),
+    Column("confirmado_em", Text),
 )
 
 def _ensure_columns():
@@ -72,6 +80,8 @@ def _ensure_columns():
             cols = conn.execute(text("PRAGMA table_info(eventos)")).all()
             names = {c[1] for c in cols}
             def add(colname): conn.execute(text(f"ALTER TABLE eventos ADD COLUMN {colname} TEXT"))
+
+            # existentes
             if "img_url"       not in names: add("img_url")
             if "camera_id"     not in names: add("camera_id")
             if "camera_name"   not in names: add("camera_name")
@@ -87,8 +97,15 @@ def _ensure_columns():
             if "file_name"     not in names: add("file_name")
             if "llava_pt"      not in names: add("llava_pt")
             if "dur_llava_ms"  not in names: add("dur_llava_ms")
+
+            # NOVO (confirmação)
+            if "confirmado"       not in names: add("confirmado")
+            if "relato_operador"  not in names: add("relato_operador")
+            if "confirmado_por"   not in names: add("confirmado_por")
+            if "confirmado_em"    not in names: add("confirmado_em")
     else:
         stmts = [
+            # existentes
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS img_url TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS camera_id TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS camera_name TEXT",
@@ -104,6 +121,12 @@ def _ensure_columns():
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS file_name TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS llava_pt TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS dur_llava_ms TEXT",
+
+            # NOVO (confirmação)
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS confirmado TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS relato_operador TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS confirmado_por TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS confirmado_em TEXT",
         ]
         with engine.begin() as conn:
             for s in stmts:
@@ -124,7 +147,7 @@ def salvar_evento(ev: dict):
         prune_if_needed(conn)
 
 # -------------------- Busca p/ painel --------------------
-def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
+def buscar_eventos(filtro=None, data=None, status=None, confirmado=None, limit=50, offset=0):
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
         "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,",
@@ -139,7 +162,11 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
         "COALESCE(llava_pt,'') AS llava_pt,",
         "COALESCE(job_id,'') AS job_id,",
         "COALESCE(sha256,'') AS sha256,",
-        "COALESCE(file_name,'') AS file_name",
+        "COALESCE(file_name,'') AS file_name,",
+        "COALESCE(confirmado,'') AS confirmado,",
+        "COALESCE(relato_operador,'') AS relato_operador,",
+        "COALESCE(confirmado_por,'') AS confirmado_por,",
+        "COALESCE(confirmado_em,'') AS confirmado_em",
         "FROM eventos WHERE 1=1",
     ]
     params = {}
@@ -154,13 +181,15 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
                     expr = (
                         f"(instr(objeto, :{k}) > 0 OR instr(descricao, :{k}) > 0 OR "
                         f"instr(identificador, :{k}) > 0 OR instr(camera_id, :{k}) > 0 OR "
-                        f"instr(camera_name, :{k}) > 0 OR instr(local, :{k}) > 0 OR instr(job_id, :{k}) > 0)"
+                        f"instr(camera_name, :{k}) > 0 OR instr(local, :{k}) > 0 OR instr(job_id, :{k}) > 0 OR "
+                        f"instr(relato_operador, :{k}) > 0)"
                     )
                 else:
                     expr = (
                         f"(POSITION(:{k} IN objeto) > 0 OR POSITION(:{k} IN descricao) > 0 OR "
                         f"POSITION(:{k} IN identificador) > 0 OR POSITION(:{k} IN camera_id) > 0 OR "
-                        f"POSITION(:{k} IN camera_name) > 0 OR POSITION(:{k} IN local) > 0 OR POSITION(:{k} IN job_id) > 0)"
+                        f"POSITION(:{k} IN camera_name) > 0 OR POSITION(:{k} IN local) > 0 OR POSITION(:{k} IN job_id) > 0 OR "
+                        f"POSITION(:{k} IN relato_operador) > 0)"
                     )
                 or_parts.append(expr)
                 params[k] = t
@@ -176,6 +205,14 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
     if status:
         sql.append("AND status = :s")
         params["s"] = status
+
+    # confirmado: "SIM" ou "NAO"
+    if confirmado == "SIM":
+        sql.append("AND confirmado = :c1")
+        params["c1"] = CONFIRM_VALUE
+    elif confirmado == "NAO":
+        sql.append("AND (confirmado IS NULL OR confirmado = '' OR confirmado <> :c2)")
+        params["c2"] = CONFIRM_VALUE
 
     sql.append("ORDER BY id DESC LIMIT :lim OFFSET :off")
     params["lim"] = int(limit)
@@ -196,7 +233,11 @@ def buscar_eventos(filtro=None, data=None, status=None, limit=50, offset=0):
             model_yolo=r[11] or "", classes=r[12] or "",
             yolo_conf=r[13] or "", yolo_imgsz=r[14] or "",
             llava_pt=r[15] or "",
-            job_id=r[16] or "", sha256=r[17] or "", file_name=r[18] or ""
+            job_id=r[16] or "", sha256=r[17] or "", file_name=r[18] or "",
+            confirmado=r[19] or "",
+            relato_operador=r[20] or "",
+            confirmado_por=r[21] or "",
+            confirmado_em=r[22] or "",
         ))
     return evs
 
@@ -248,6 +289,7 @@ HTML_TEMPLATE = """
     .chip{ background:var(--chip); color:var(--chip-ink); border:1px solid #e0e7ff; padding:3px 8px; border-radius:999px; font-size:12px }
     .pager{ display:flex; gap:12px; margin-top:18px } .pager a{ color:#2563eb; text-decoration:none; font-size:14px }
     .sep{ height:1px; background:var(--line); margin:10px 0 }
+    .confirmBox{ background:#fafafa; border:1px solid var(--line); border-radius:10px; padding:10px; }
   </style>
 </head>
 <body>
@@ -290,6 +332,9 @@ HTML_TEMPLATE = """
 
             <div class="kv"><b>Identificador:</b> {{ e.identificador }}
               <span class="badge {% if e.status.lower() == 'alerta' %}alerta{% endif %}">{{ e.status|capitalize }}</span>
+              {% if e.confirmado == 'SIM' %}
+                <span class="badge" style="background:#dcfce7;border-color:#bbf7d0;color:#166534;">Violência confirmada</span>
+              {% endif %}
             </div>
 
             <div class="kv"><b>Objeto:</b> {{ e.objeto }}</div>
@@ -302,25 +347,7 @@ HTML_TEMPLATE = """
             </div>
 
             <div class="kv"><b>Local:</b> {{ e.local or '-' }}</div>
-            
-            {#
-            {% if e.model_yolo or e.classes %}
-              <div class="sep"></div>
-              <div class="kv"><b>YOLO:</b>
-                {% if e.model_yolo %} modelo {{ e.model_yolo }}{% endif %}
-                {% if e.yolo_conf %} · conf {{ e.yolo_conf }}{% endif %}
-                {% if e.yolo_imgsz %} · imgsz {{ e.yolo_imgsz }}{% endif %}
-              </div> 
-              {% if e.classes %}
-                <div class="chips">
-                  {% for c in e.classes.split(',') %}
-                    <span class="chip">{{ c.strip() }}</span>
-                  {% endfor %}
-                </div>
-              {% endif %}
-            {% endif %}
-            #}
-            
+
             <div class="sep"></div>
             <div class="ctx">
               <b>Analise objeto:</b> {{ e.descricao|safe }}
@@ -329,6 +356,16 @@ HTML_TEMPLATE = """
                 <div class="ctx"><b>Diagnóstico:</b> {{ e.llava_pt }}</div>
               {% endif %}
             </div>
+
+            {% if e.confirmado == 'SIM' %}
+              <div class="sep"></div>
+              <div class="confirmBox">
+                <div class="kv"><b>Relato do operador:</b> {{ e.relato_operador }}</div>
+                <div class="kv"><b>Confirmado por:</b> {{ e.confirmado_por or '-' }}</div>
+                <div class="kv"><b>Confirmado em:</b> {{ e.confirmado_em or '-' }}</div>
+              </div>
+            {% endif %}
+
           </div>
         </div>
       </div>
@@ -442,13 +479,25 @@ def _split_yolo_llava(desc: str):
 # -------------------- Rotas principais --------------------
 @app.route("/")
 def index():
-    return "Online. POST /evento | POST /resposta_ia | GET /historico | GET /alertas | GET /api/events | GET /api/stats | GET /admin/reset?key=..."
+    return (
+        "Online. "
+        "POST /evento | POST /resposta_ia | "
+        "GET /historico | GET /alertas | GET /indicios | GET /confirmados | "
+        "POST /api/confirmar?key=... | POST /api/desconfirmar?key=... | "
+        "GET /api/events | GET /api/stats | GET /admin/reset?key=..."
+    )
 
 def _now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def _trim(s):
     return (s or "").strip()
+
+def _admin_ok():
+    # aceita ?key=... ou header X-Admin-Key
+    kq = (request.args.get("key") or "").strip()
+    kh = (request.headers.get("X-Admin-Key") or "").strip()
+    return (kq and kq == ADMIN_KEY) or (kh and kh == ADMIN_KEY)
 
 @app.route("/evento", methods=["POST"])
 def receber_evento():
@@ -549,7 +598,7 @@ def receber_evento():
             set_parts = []
             params = {}
             for k, v in base_row.items():
-                if k in ("timestamp",):  # atualiza abaixo
+                if k in ("timestamp",):
                     continue
                 set_parts.append(f"{k}=:{k}")
                 params[k] = v
@@ -565,7 +614,13 @@ def receber_evento():
             try:
                 ev_id = r.inserted_primary_key[0]
             except Exception:
-                ev_id = conn.execute(text("SELECT last_insert_rowid()")).scalar_one()
+                # fallback (sqlite)
+                try:
+                    ev_id = conn.execute(text("SELECT last_insert_rowid()")).scalar_one()
+                except Exception:
+                    # postgres: pega último id pelo MAX
+                    ev_id = conn.execute(text("SELECT MAX(id) FROM eventos")).scalar_one()
+
         prune_if_needed(conn)
 
     return jsonify({"ok": True, "id": int(ev_id)})
@@ -631,13 +686,73 @@ def receber_resposta_ia():
 
     return jsonify({"ok": True})
 
+# -------------------- Confirmação do operador (BD) --------------------
+@app.route("/api/confirmar", methods=["POST"])
+def api_confirmar():
+    if not _admin_ok():
+        abort(403)
+
+    dados = request.json or {}
+    ev_id = int(dados.get("id") or 0)
+    relato = _trim(dados.get("relato") or dados.get("relato_operador"))
+    operador = _trim(dados.get("operador") or dados.get("confirmado_por"))
+    confirmado = _trim(dados.get("confirmado") or CONFIRM_VALUE) or CONFIRM_VALUE
+
+    if ev_id <= 0 or not relato:
+        return jsonify({"ok": False, "error": "Campos obrigatórios: id, relato"}), 400
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE eventos
+                   SET confirmado=:c,
+                       relato_operador=:r,
+                       confirmado_por=:p,
+                       confirmado_em=:em
+                 WHERE id=:id
+            """),
+            {
+                "c": confirmado,
+                "r": relato,
+                "p": operador,
+                "em": _now_str(),
+                "id": ev_id
+            }
+        )
+    return jsonify({"ok": True})
+
+@app.route("/api/desconfirmar", methods=["POST"])
+def api_desconfirmar():
+    if not _admin_ok():
+        abort(403)
+
+    dados = request.json or {}
+    ev_id = int(dados.get("id") or 0)
+    if ev_id <= 0:
+        return jsonify({"ok": False, "error": "Campo obrigatório: id"}), 400
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                UPDATE eventos
+                   SET confirmado='',
+                       relato_operador='',
+                       confirmado_por='',
+                       confirmado_em=''
+                 WHERE id=:id
+            """),
+            {"id": ev_id}
+        )
+    return jsonify({"ok": True})
+
+# -------------------- Painéis Flask (BD) --------------------
 @app.route("/historico")
 def historico():
     filtro = (request.args.get("filtro") or "").strip()
     data = (request.args.get("data") or "").strip()
     page = max(int(request.args.get("page") or 1), 1)
     evs = buscar_eventos(filtro if filtro else None, data if data else None,
-                         status=None, limit=50, offset=(page-1)*50)
+                         status=None, confirmado=None, limit=50, offset=(page-1)*50)
     return render_template_string(
         HTML_TEMPLATE,
         page_title="Painel Histórico",
@@ -659,6 +774,7 @@ def alertas():
         filtro=raw,
         data=data if data else None,
         status=None,
+        confirmado=None,
         limit=50,
         offset=(page-1)*50
     )
@@ -687,6 +803,58 @@ def alertas():
         iaprotect_url=_iaprotect_url()
     )
 
+@app.route("/indicios")
+def indicios():
+    filtro = (request.args.get("filtro") or "").strip()
+    data = (request.args.get("data") or "").strip()
+    page = max(int(request.args.get("page") or 1), 1)
+
+    evs = buscar_eventos(
+        filtro=filtro if filtro else None,
+        data=data if data else None,
+        status=None,
+        confirmado="NAO",
+        limit=50,
+        offset=(page-1)*50
+    )
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        page_title="Indícios de Violência",
+        eventos=evs,
+        filtro=filtro,
+        data=data,
+        page=page,
+        logo_url=_logo_url(),
+        iaprotect_url=_iaprotect_url()
+    )
+
+@app.route("/confirmados")
+def confirmados():
+    filtro = (request.args.get("filtro") or "").strip()
+    data = (request.args.get("data") or "").strip()
+    page = max(int(request.args.get("page") or 1), 1)
+
+    evs = buscar_eventos(
+        filtro=filtro if filtro else None,
+        data=data if data else None,
+        status=None,
+        confirmado="SIM",
+        limit=50,
+        offset=(page-1)*50
+    )
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        page_title="Violência Confirmada",
+        eventos=evs,
+        filtro=filtro,
+        data=data,
+        page=page,
+        logo_url=_logo_url(),
+        iaprotect_url=_iaprotect_url()
+    )
+
 # -------------------- APIs p/ Grafana --------------------
 @app.route("/api/events")
 def api_events():
@@ -695,6 +863,7 @@ def api_events():
     camera_id = (request.args.get("camera_id") or "").strip()
     local = (request.args.get("local") or "").strip()
     status = (request.args.get("status") or "").strip()
+    confirmado = (request.args.get("confirmado") or "").strip().upper()  # SIM/NAO/''
 
     clauses = ["1=1"]
     params = {}
@@ -717,10 +886,19 @@ def api_events():
         clauses.append("status = :st")
         params["st"] = status
 
+    if confirmado == "SIM":
+        clauses.append("confirmado = :cf")
+        params["cf"] = CONFIRM_VALUE
+    elif confirmado == "NAO":
+        clauses.append("(confirmado IS NULL OR confirmado = '' OR confirmado <> :cf2)")
+        params["cf2"] = CONFIRM_VALUE
+
     sql = f"""
     SELECT id, timestamp, status, identificador, camera_id, camera_name, local, objeto,
            descricao, COALESCE(descricao_raw,''), COALESCE(descricao_pt,''),
            COALESCE(model_yolo,''), COALESCE(classes,''), COALESCE(yolo_conf,''), COALESCE(yolo_imgsz,''),
+           COALESCE(llava_pt,''),
+           COALESCE(confirmado,''), COALESCE(relato_operador,''), COALESCE(confirmado_por,''), COALESCE(confirmado_em,''),
            CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS has_img
       FROM eventos
      WHERE {" AND ".join(clauses)}
@@ -750,8 +928,13 @@ def api_events():
             "classes": r[12] or "",
             "yolo_conf": r[13] or "",
             "yolo_imgsz": r[14] or "",
-            "has_img": bool(r[15]),
-            "image_url": url_for("img", ev_id=r[0], _external=True) if r[15] else ""
+            "llava_pt": r[15] or "",
+            "confirmado": r[16] or "",
+            "relato_operador": r[17] or "",
+            "confirmado_por": r[18] or "",
+            "confirmado_em": r[19] or "",
+            "has_img": bool(r[20]),
+            "image_url": url_for("img", ev_id=r[0], _external=True) if r[20] else ""
         })
     return jsonify(out)
 
@@ -796,29 +979,22 @@ def api_stats():
             bucket = lambda ts: ts[:13]
 
         with engine.begin() as conn:
-            rows = conn.execute(text("SELECT timestamp, status FROM eventos WHERE timestamp >= :s"),
-                                {"s": since.strftime("%Y-%m-%d %H:%M:%S")}).all()
+            rows = conn.execute(
+                text("SELECT timestamp, status FROM eventos WHERE timestamp >= :s"),
+                {"s": since.strftime("%Y-%m-%d %H:%M:%S")}
+            ).all()
         agg = {}
         for ts, st in rows:
             key = bucket(ts)
-            a = agg.get(key, {"total":0, "alertas":0})
+            a = agg.get(key, {"total": 0, "alertas": 0})
             a["total"] += 1
             if st == "alerta":
                 a["alertas"] += 1
             agg[key] = a
-        series = [{"bucket": k, "total": v["total"], "alertas": v["alertas"]} for k,v in sorted(agg.items())]
+        series = [{"bucket": k, "total": v["total"], "alertas": v["alertas"]} for k, v in sorted(agg.items())]
         return jsonify({"range": rng, "series": series})
 
 # -------------------- Poda automática --------------------
-def _disk_usage_for_path(path: str):
-    try:
-        st = os.statvfs(os.path.abspath(path))
-        total = st.f_frsize * st.f_blocks
-        used  = total - (st.f_frsize * st.f_bavail)
-        return used, total
-    except Exception:
-        return 0, 0
-
 def prune_if_needed(conn):
     removed_total = 0
 
@@ -833,6 +1009,7 @@ def prune_if_needed(conn):
 
         if uso < PRUNE_THRESHOLD:
             return
+
         while uso > PRUNE_TARGET:
             r = conn.execute(text("""
                 DELETE FROM eventos
@@ -860,11 +1037,14 @@ def prune_if_needed(conn):
                 break
             removed_total += removed
     else:
+        # Postgres/Render: controla por quantidade de linhas
         total_rows = conn.execute(text("SELECT COUNT(*) FROM eventos")).scalar_one()
         if total_rows <= int(MAX_ROWS * PRUNE_THRESHOLD):
             return
+
         target_rows = int(MAX_ROWS * PRUNE_TARGET)
         to_remove = max(0, total_rows - target_rows)
+
         while to_remove > 0:
             step = min(PRUNE_BATCH, to_remove)
             r = conn.execute(text("""
@@ -880,7 +1060,7 @@ def prune_if_needed(conn):
             if removed == 0:
                 break
             removed_total += removed
-            to_remove -= step
+            to_remove -= removed
 
     try:
         print(f"[PRUNE] removidos={removed_total}")
