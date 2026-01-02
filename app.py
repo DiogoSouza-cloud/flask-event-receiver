@@ -4,6 +4,7 @@ from io import BytesIO
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 import re
+import hashlib
 
 from flask import Flask, request, jsonify, render_template_string, url_for, send_file, abort, redirect
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
@@ -493,6 +494,22 @@ def _now_str():
 def _trim(s):
     return (s or "").strip()
 
+def _sha1_from_b64_image(img_b64: str) -> str:
+    """
+    Calcula SHA-1 do JPEG/bytes armazenados em base64.
+    Retorna '' se falhar.
+    Aceita base64 puro ou data URL (data:image/...;base64,...).
+    """
+    if not img_b64:
+        return ""
+    try:
+        if "," in img_b64:
+            img_b64 = img_b64.split(",", 1)[1].strip()
+        raw = base64.b64decode(img_b64, validate=False)
+        return hashlib.sha1(raw).hexdigest()
+    except Exception:
+        return ""
+
 def _admin_ok():
     # aceita ?key=... (querystring), key em form-data (POST), ou header X-Admin-Key
     kq = (request.values.get("key") or "").strip()
@@ -874,14 +891,28 @@ def confirmar_ui():
             else:
                 if not relato:
                     return "Relato é obrigatório para confirmar.", 400
+
+                # Preenche sha256 automaticamente ao confirmar, se estiver vazio e existir imagem base64
+                row = conn.execute(
+                    text("SELECT COALESCE(sha256,''), COALESCE(imagem,'') FROM eventos WHERE id=:id"),
+                    {"id": ev_id}
+                ).first()
+                sha_atual = (row[0] or "") if row else ""
+                img_atual = (row[1] or "") if row else ""
+
+                sha_calc = ""
+                if not sha_atual and img_atual:
+                    sha_calc = _sha1_from_b64_image(img_atual)
+
                 conn.execute(text("""
                     UPDATE eventos
                        SET confirmado=:c,
                            relato_operador=:r,
                            confirmado_por=:p,
-                           confirmado_em=:em
+                           confirmado_em=:em,
+                           sha256 = COALESCE(NULLIF(sha256,''), NULLIF(:sha,''))
                      WHERE id=:id
-                """), {"c": CONFIRM_VALUE, "r": relato, "p": operador, "em": _now_str(), "id": ev_id})
+                """), {"c": CONFIRM_VALUE, "r": relato, "p": operador, "em": _now_str(), "sha": sha_calc, "id": ev_id})
 
         return redirect(next_url)
 
@@ -919,13 +950,26 @@ def api_confirmar():
         return jsonify({"ok": False, "error": "Campos obrigatórios: id, relato"}), 400
 
     with engine.begin() as conn:
+        # Preenche sha256 automaticamente ao confirmar, se estiver vazio e existir imagem base64
+        row = conn.execute(
+            text("SELECT COALESCE(sha256,''), COALESCE(imagem,'') FROM eventos WHERE id=:id"),
+            {"id": ev_id}
+        ).first()
+        sha_atual = (row[0] or "") if row else ""
+        img_atual = (row[1] or "") if row else ""
+
+        sha_calc = ""
+        if not sha_atual and img_atual:
+            sha_calc = _sha1_from_b64_image(img_atual)
+
         conn.execute(
             text("""
                 UPDATE eventos
                    SET confirmado=:c,
                        relato_operador=:r,
                        confirmado_por=:p,
-                       confirmado_em=:em
+                       confirmado_em=:em,
+                       sha256 = COALESCE(NULLIF(sha256,''), NULLIF(:sha,''))
                  WHERE id=:id
             """),
             {
@@ -933,6 +977,7 @@ def api_confirmar():
                 "r": relato,
                 "p": operador,
                 "em": _now_str(),
+                "sha": sha_calc,
                 "id": ev_id
             }
         )
