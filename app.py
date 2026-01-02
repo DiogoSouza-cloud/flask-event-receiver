@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse
 import re
 
-from flask import Flask, request, jsonify, render_template_string, url_for, send_file, abort
+from flask import Flask, request, jsonify, render_template_string, url_for, send_file, abort, redirect
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
 from sqlalchemy.sql import text
 
@@ -494,8 +494,8 @@ def _trim(s):
     return (s or "").strip()
 
 def _admin_ok():
-    # aceita ?key=... ou header X-Admin-Key
-    kq = (request.args.get("key") or "").strip()
+    # aceita ?key=... (querystring), key em form-data (POST), ou header X-Admin-Key
+    kq = (request.values.get("key") or "").strip()
     kh = (request.headers.get("X-Admin-Key") or "").strip()
     return (kq and kq == ADMIN_KEY) or (kh and kh == ADMIN_KEY)
 
@@ -682,7 +682,209 @@ def receber_resposta_ia():
                 {"llp": llava_pt, "dur": dur_ms, "loc": local, "cam_name": camera_name, "id": target_id}
             )
 
-        prune_if_needed(conn)
+        prune
+# -------------------- UI de confirmação (navegador) --------------------
+CONFIRM_UI_TEMPLATE = """
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Confirmar Violência</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root{ --bg:#f7f7f8; --card:#fff; --line:#e5e7eb; --ink:#111827; --muted:#6b7280; --ok:#16a34a; --no:#dc2626; }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--ink)}
+    .wrap{max-width:1100px;margin:0 auto;padding:18px}
+    .top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+    .top a{color:#2563eb;text-decoration:none}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+    .grid{display:grid;grid-template-columns:420px 1fr;gap:16px}
+    @media(max-width:980px){.grid{grid-template-columns:1fr}}
+    img{width:100%;border-radius:12px;border:1px solid var(--line);object-fit:cover;background:#f3f4f6}
+    .kv{margin:6px 0;font-size:14px}
+    .kv b{display:inline-block;min-width:160px;color:#374151}
+    textarea,input{width:100%;border:1px solid var(--line);border-radius:12px;padding:10px;font-size:14px;background:#fff}
+    textarea{min-height:120px;resize:vertical}
+    .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+    .btn{border:0;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer}
+    .ok{background:var(--ok);color:#fff}
+    .no{background:var(--no);color:#fff}
+    .muted{color:var(--muted);font-size:12px}
+    hr{border:none;border-top:1px solid var(--line);margin:12px 0}
+    .badge{display:inline-block;font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;color:#374151;margin-left:8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h2 style="margin:0">Confirmar caso real de Violência</h2>
+      <a href="{{ next_url }}">Voltar</a>
+    </div>
+
+    <div class="card">
+      <div class="grid">
+        <div>
+          {% if ev.tem_img %}
+            <img src="{{ img_src }}" alt="Imagem do evento">
+          {% else %}
+            <div class="muted">Evento sem imagem salva.</div>
+          {% endif %}
+        </div>
+        <div>
+          <div class="kv"><b>ID:</b> {{ ev.id }}</div>
+          <div class="kv"><b>Timestamp:</b> {{ ev.timestamp }}</div>
+          <div class="kv"><b>Status:</b> {{ ev.status }} {% if ev.status %}<span class="badge">{{ ev.status }}</span>{% endif %}</div>
+          <div class="kv"><b>Identificador:</b> {{ ev.identificador }}</div>
+          <div class="kv"><b>Câmera:</b> {{ ev.camera_id or '-' }}{% if ev.camera_name %} – {{ ev.camera_name }}{% endif %}</div>
+          <div class="kv"><b>Local:</b> {{ ev.local or '-' }}</div>
+          <div class="kv"><b>Objeto:</b> {{ ev.objeto or '-' }}</div>
+          <hr>
+          <div class="kv"><b>Analise objeto:</b></div>
+          <div style="white-space:pre-wrap;line-height:1.35">{{ ev.descricao_plain }}</div>
+
+          {% if ev.llava_pt %}
+            <hr>
+            <div class="kv"><b>Diagnóstico:</b></div>
+            <div style="white-space:pre-wrap;line-height:1.35">{{ ev.llava_pt }}</div>
+          {% endif %}
+
+          <hr>
+
+          <form method="post">
+            <input type="hidden" name="key" value="{{ key_value }}">
+            <input type="hidden" name="id" value="{{ ev.id }}">
+            <input type="hidden" name="next" value="{{ next_url }}">
+
+            <div class="kv"><b>Operador:</b></div>
+            <input name="operador" placeholder="ex.: op1" value="">
+
+            <div style="height:10px"></div>
+            <div class="kv"><b>Relato do operador:</b></div>
+            <textarea name="relato" placeholder="Descreva o que foi visto na imagem..."></textarea>
+
+            <div class="row">
+              <button class="btn ok" type="submit" name="action" value="confirmar">Confirmar</button>
+              <button class="btn no" type="submit" name="action" value="desconfirmar">Desfazer</button>
+              <span class="muted">O relato é obrigatório para confirmar.</span>
+            </div>
+          </form>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+def _load_event_by_id(ev_id: int):
+    with engine.begin() as conn:
+        r = conn.execute(text("""
+            SELECT id, timestamp, status, objeto, descricao, identificador,
+                   CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,
+                   COALESCE(camera_id,''), COALESCE(camera_name,''), COALESCE(local,''),
+                   COALESCE(llava_pt,'')
+            FROM eventos
+            WHERE id=:id
+        """), {"id": ev_id}).first()
+    if not r:
+        return None
+
+    # descricao armazenada no painel já vem com <br>; aqui mostramos como texto puro
+    desc_html = (r[4] or "")
+    desc_plain = desc_html.replace("<br>", "\n")
+
+    return {
+        "id": r[0],
+        "timestamp": r[1] or "",
+        "status": r[2] or "",
+        "objeto": r[3] or "",
+        "descricao_plain": desc_plain.strip(),
+        "identificador": r[5] or "",
+        "tem_img": bool(r[6]),
+        "camera_id": r[7] or "",
+        "camera_name": r[8] or "",
+        "local": r[9] or "",
+        "llava_pt": r[10] or "",
+    }
+
+def _load_event_by_ident(ident: str):
+    if not ident:
+        return None
+    with engine.begin() as conn:
+        r = conn.execute(text("""
+            SELECT id
+            FROM eventos
+            WHERE identificador=:ident
+            ORDER BY id DESC
+            LIMIT 1
+        """), {"ident": ident}).first()
+    if not r:
+        return None
+    return _load_event_by_id(int(r[0]))
+
+@app.route("/confirmar", methods=["GET", "POST"])
+def confirmar_ui():
+    # Proteção: exige ADMIN_KEY via ?key=... (GET) ou form-data key (POST) ou header
+    if not _admin_ok():
+        abort(403)
+
+    next_url = (request.values.get("next") or "/confirmados").strip()
+    key_value = (request.values.get("key") or "").strip()  # para manter no POST
+
+    if request.method == "POST":
+        ev_id = int(request.form.get("id") or 0)
+        action = (request.form.get("action") or "confirmar").strip()
+        relato = _trim(request.form.get("relato"))
+        operador = _trim(request.form.get("operador"))
+
+        if ev_id <= 0:
+            return "ID inválido.", 400
+
+        with engine.begin() as conn:
+            if action == "desconfirmar":
+                conn.execute(text("""
+                    UPDATE eventos
+                       SET confirmado='',
+                           relato_operador='',
+                           confirmado_por='',
+                           confirmado_em=''
+                     WHERE id=:id
+                """), {"id": ev_id})
+            else:
+                if not relato:
+                    return "Relato é obrigatório para confirmar.", 400
+                conn.execute(text("""
+                    UPDATE eventos
+                       SET confirmado=:c,
+                           relato_operador=:r,
+                           confirmado_por=:p,
+                           confirmado_em=:em
+                     WHERE id=:id
+                """), {"c": CONFIRM_VALUE, "r": relato, "p": operador, "em": _now_str(), "id": ev_id})
+
+        return redirect(next_url)
+
+    # GET
+    ev_id = int(request.args.get("id") or 0)
+    ident = _trim(request.args.get("ident"))
+
+    ev = _load_event_by_id(ev_id) if ev_id else (_load_event_by_ident(ident) if ident else None)
+    if not ev:
+        return "Evento não encontrado (id/ident inválido).", 404
+
+    img_src = url_for("img", ev_id=ev["id"], _external=True) if ev["tem_img"] else ""
+    return render_template_string(
+        CONFIRM_UI_TEMPLATE,
+        ev=ev,
+        img_src=img_src,
+        next_url=next_url,
+        key_value=key_value,
+    )
+
+
+_if_needed(conn)
 
     return jsonify({"ok": True})
 
