@@ -860,7 +860,6 @@ def _load_event_by_ident(ident: str):
         return None
     return _load_event_by_id(int(r[0]))
 
-@app.route("/confirmar", methods=["GET", "POST"])
 def _load_event_by_sha(sha: str):
     sha = _trim(sha)
     if not sha:
@@ -877,6 +876,8 @@ def _load_event_by_sha(sha: str):
         return None
     return _load_event_by_id(int(r[0]))
 
+
+@app.route("/confirmar", methods=["GET", "POST"])
 def confirmar_ui():
     # Proteção: exige ADMIN_KEY via ?key=... (GET) ou form-data key (POST) ou header
     if not _admin_ok():
