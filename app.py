@@ -912,17 +912,33 @@ def confirmar_ui():
                            confirmado_em=:em,
                            sha256 = COALESCE(NULLIF(sha256,''), NULLIF(:sha,''))
                      WHERE id=:id
-                """), {"c": CONFIRM_VALUE, "r": relato, "p": operador, "em": _now_str(), "sha": sha_calc, "id": ev_id})
+                """), {
+                    "c": CONFIRM_VALUE,
+                    "r": relato,
+                    "p": operador,
+                    "em": _now_str(),
+                    "sha": sha_calc,
+                    "id": ev_id
+                })
 
         return redirect(next_url)
 
     # GET
     ev_id = int(request.args.get("id") or 0)
     ident = _trim(request.args.get("ident"))
+    sha = _trim(request.args.get("sha"))
 
-    ev = _load_event_by_id(ev_id) if ev_id else (_load_event_by_ident(ident) if ident else None)
+    # Resolve evento por prioridade: id -> sha -> ident
+    ev = None
+    if ev_id:
+        ev = _load_event_by_id(ev_id)
+    elif sha:
+        ev = _load_event_by_sha(sha)
+    elif ident:
+        ev = _load_event_by_ident(ident)
+
     if not ev:
-        return "Evento não encontrado (id/ident inválido).", 404
+        return "Evento não encontrado (id/sha/ident inválido).", 404
 
     img_src = url_for("img", ev_id=ev["id"], _external=True) if ev["tem_img"] else ""
     return render_template_string(
@@ -932,6 +948,7 @@ def confirmar_ui():
         next_url=next_url,
         key_value=key_value,
     )
+
 
 
 # -------------------- Confirmação do operador (BD) --------------------
