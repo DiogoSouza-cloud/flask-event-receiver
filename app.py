@@ -682,11 +682,22 @@ def receber_resposta_ia():
                    SET llava_pt=:llp,
                        dur_llava_ms=:dur,
                        local=COALESCE(NULLIF(:loc,''), local),
-                       camera_name=COALESCE(NULLIF(:cam_name,''), camera_name)
+                       camera_name=COALESCE(NULLIF(:cam_name,''), camera_name),
+                       sha256=COALESCE(NULLIF(sha256,''), NULLIF(:sha,'')),
+                       file_name=COALESCE(NULLIF(file_name,''), NULLIF(:file,''))
                  WHERE id=:id
                 """),
-                {"llp": llava_pt, "dur": dur_ms, "loc": local, "cam_name": camera_name, "sha": sha256, "id": target_id}
+                {
+                    "llp": llava_pt,
+                    "dur": dur_ms,
+                    "loc": local,
+                    "cam_name": camera_name,
+                    "sha": sha256,
+                    "file": file_name,
+                    "id": target_id
+                }
             )
+
 
         prune_if_needed(conn)
 
