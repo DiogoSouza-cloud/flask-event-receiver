@@ -682,7 +682,9 @@ def receber_resposta_ia():
                 {"llp": llava_pt, "dur": dur_ms, "loc": local, "cam_name": camera_name, "id": target_id}
             )
 
-        prune
+        prune_if_needed(conn)
+
+    return jsonify({"ok": True})
 # -------------------- UI de confirmação (navegador) --------------------
 CONFIRM_UI_TEMPLATE = """
 <!doctype html>
@@ -883,10 +885,6 @@ def confirmar_ui():
         key_value=key_value,
     )
 
-
-_if_needed(conn)
-
-    return jsonify({"ok": True})
 
 # -------------------- Confirmação do operador (BD) --------------------
 @app.route("/api/confirmar", methods=["POST"])
