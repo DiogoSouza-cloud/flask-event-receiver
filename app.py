@@ -635,6 +635,9 @@ def receber_resposta_ia():
     local      = _trim(dados.get("local"))
     llava_pt   = _trim(dados.get("resposta") or dados.get("llava_pt"))
     dur_ms     = _trim(str(dados.get("dur_llava_ms") or ""))
+    sha256     = _trim(dados.get("sha256") or dados.get("img_hash") or dados.get("sha"))
+    file_name  = _trim(dados.get("file_name"))
+
 
     with engine.begin() as conn:
         target_id = None
@@ -664,9 +667,12 @@ def receber_resposta_ia():
                 "classes": "",
                 "yolo_conf": "",
                 "yolo_imgsz": "",
-                "job_id": job_id,
+                "job_id": job_id or sha256,
+                "sha256": sha256,
+                "file_name": file_name,
                 "llava_pt": llava_pt,
                 "dur_llava_ms": dur_ms,
+
             }
             conn.execute(eventos_tb.insert().values(**ev))
         else:
@@ -679,7 +685,7 @@ def receber_resposta_ia():
                        camera_name=COALESCE(NULLIF(:cam_name,''), camera_name)
                  WHERE id=:id
                 """),
-                {"llp": llava_pt, "dur": dur_ms, "loc": local, "cam_name": camera_name, "id": target_id}
+                {"llp": llava_pt, "dur": dur_ms, "loc": local, "cam_name": camera_name, "sha": sha256, "id": target_id}
             )
 
         prune_if_needed(conn)
