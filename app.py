@@ -524,7 +524,7 @@ def receber_evento():
     yolo_conf   = _trim(str(dados.get("yolo_conf") or dados.get("conf") or ""))
     yolo_imgsz  = _trim(str(dados.get("yolo_imgsz") or dados.get("imgsz") or ""))
 
-    sha256      = _trim(dados.get("sha256") or dados.get("img_hash"))
+    sha256 = _trim(dados.get("sha256") or dados.get("img_hash") or dados.get("sha"))
     file_name   = _trim(dados.get("file_name"))
     img_b64     = _trim(dados.get("image"))
 
