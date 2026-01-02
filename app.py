@@ -861,6 +861,22 @@ def _load_event_by_ident(ident: str):
     return _load_event_by_id(int(r[0]))
 
 @app.route("/confirmar", methods=["GET", "POST"])
+def _load_event_by_sha(sha: str):
+    sha = _trim(sha)
+    if not sha:
+        return None
+    with engine.begin() as conn:
+        r = conn.execute(text("""
+            SELECT id
+            FROM eventos
+            WHERE sha256 = :sha
+            ORDER BY id DESC
+            LIMIT 1
+        """), {"sha": sha}).first()
+    if not r:
+        return None
+    return _load_event_by_id(int(r[0]))
+
 def confirmar_ui():
     # Proteção: exige ADMIN_KEY via ?key=... (GET) ou form-data key (POST) ou header
     if not _admin_ok():
@@ -928,7 +944,6 @@ def confirmar_ui():
     ident = _trim(request.args.get("ident"))
     sha = _trim(request.args.get("sha"))
 
-    # Resolve evento por prioridade: id -> sha -> ident
     ev = None
     if ev_id:
         ev = _load_event_by_id(ev_id)
@@ -948,6 +963,7 @@ def confirmar_ui():
         next_url=next_url,
         key_value=key_value,
     )
+
 
 
 
