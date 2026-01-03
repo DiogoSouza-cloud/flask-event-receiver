@@ -818,7 +818,11 @@ def _load_event_by_id(ev_id: int):
     with engine.begin() as conn:
         r = conn.execute(text("""
             SELECT id, timestamp, status, objeto, descricao, identificador,
-                   CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,
+                   CASE
+                     WHEN (imagem IS NULL OR imagem = '') AND COALESCE(img_url,'') = '' THEN 0
+                     ELSE 1
+                   END AS tem_img,
+                   COALESCE(img_url,'') AS img_url,
                    COALESCE(camera_id,''), COALESCE(camera_name,''), COALESCE(local,''),
                    COALESCE(llava_pt,'')
             FROM eventos
@@ -827,7 +831,6 @@ def _load_event_by_id(ev_id: int):
     if not r:
         return None
 
-    # descricao armazenada no painel já vem com <br>; aqui mostramos como texto puro
     desc_html = (r[4] or "")
     desc_plain = desc_html.replace("<br>", "\n")
 
@@ -839,11 +842,14 @@ def _load_event_by_id(ev_id: int):
         "descricao_plain": desc_plain.strip(),
         "identificador": r[5] or "",
         "tem_img": bool(r[6]),
-        "camera_id": r[7] or "",
-        "camera_name": r[8] or "",
-        "local": r[9] or "",
-        "llava_pt": r[10] or "",
+        "img_url": r[7] or "",
+        "camera_id": r[8] or "",
+        "camera_name": r[9] or "",
+        "local": r[10] or "",
+        "llava_pt": r[11] or "",
     }
+
+
 
 def _load_event_by_ident(ident: str):
     if not ident:
@@ -875,6 +881,87 @@ def _load_event_by_sha(sha: str):
     if not r:
         return None
     return _load_event_by_id(int(r[0]))
+
+def _parse_ts_any(s: str) -> str:
+    s = _trim(s)
+    if not s:
+        return _now_str()
+    # aceita ISO: 2026-01-02T19:57:30.855Z
+    try:
+        if "T" in s:
+            s2 = s.replace("Z", "").split(".", 1)[0]
+            dt = datetime.fromisoformat(s2)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
+    # aceita já no formato do BD
+    try:
+        dt = datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return _now_str()
+
+
+def _ensure_event_from_sha_query(sha: str):
+    """
+    Se o sha não existir no Postgres, cria um evento mínimo com dados vindos da querystring,
+    para permitir a confirmação via UI.
+    Espera pelo menos: sha e (idealmente) url.
+    """
+    sha = _trim(sha)
+    if not sha:
+        return None
+
+    # Já existe?
+    ev = _load_event_by_sha(sha)
+    if ev:
+        return ev
+
+    # Dados vindos do Grafana (adicione na URL do botão)
+    img_url   = _trim(request.args.get("url") or request.args.get("img") or "")
+    camera_id = _trim(request.args.get("camera_id") or request.args.get("camera") or "")
+    camera_name = _trim(request.args.get("camera_name") or request.args.get("cam_name") or "")
+    local     = _trim(request.args.get("local") or "")
+    objeto    = _trim(request.args.get("objeto") or "Indício (Loki)")
+    llava_pt  = _trim(request.args.get("llava_pt") or request.args.get("ctx") or "")
+    ident     = _trim(request.args.get("ident") or request.args.get("host") or "Loki")
+    status    = _trim(request.args.get("status") or "ok")
+    ts_in     = _trim(request.args.get("timestamp") or request.args.get("ts") or request.args.get("time") or "")
+    ts_db     = _parse_ts_any(ts_in)
+
+    ev_row = {
+        "timestamp": ts_db,
+        "status": status,
+        "objeto": objeto,
+        "descricao": "",          # pode ficar vazio (indício)
+        "imagem": "",             # por padrão sem base64
+        "img_url": img_url,       # importante para exibir na UI
+        "identificador": ident,
+        "camera_id": camera_id,
+        "camera_name": camera_name,
+        "local": local,
+        "descricao_raw": "",
+        "descricao_pt": "",
+        "model_yolo": "",
+        "classes": "",
+        "yolo_conf": "",
+        "yolo_imgsz": "",
+        "job_id": sha,
+        "sha256": sha,
+        "file_name": "",
+        "llava_pt": llava_pt,
+        "dur_llava_ms": "",
+    }
+
+    with engine.begin() as conn:
+        conn.execute(eventos_tb.insert().values(**ev_row))
+
+        # pega o id recém criado (funciona no Postgres)
+        new_id = conn.execute(text("SELECT id FROM eventos WHERE sha256=:s ORDER BY id DESC LIMIT 1"), {"s": sha}).scalar_one_or_none()
+
+    if not new_id:
+        return None
+    return _load_event_by_id(int(new_id))
 
 
 @app.route("/confirmar", methods=["GET", "POST"])
@@ -949,14 +1036,14 @@ def confirmar_ui():
     if ev_id:
         ev = _load_event_by_id(ev_id)
     elif sha:
-        ev = _load_event_by_sha(sha)
+        ev = _ensure_event_from_sha_query(sha)
     elif ident:
         ev = _load_event_by_ident(ident)
 
     if not ev:
         return "Evento não encontrado (id/sha/ident inválido).", 404
 
-    img_src = url_for("img", ev_id=ev["id"], _external=True) if ev["tem_img"] else ""
+    img_src = (ev.get("img_url") or url_for("img", ev_id=ev["id"], _external=True)) if ev["tem_img"] else ""
     return render_template_string(
         CONFIRM_UI_TEMPLATE,
         ev=ev,
