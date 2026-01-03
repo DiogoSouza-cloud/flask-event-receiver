@@ -882,6 +882,49 @@ def _load_event_by_sha(sha: str):
         return None
     return _load_event_by_id(int(r[0]))
 
+def _try_attach_sha_to_recent_events(sha: str, limit: int = 400):
+    """
+    Quando vem um sha do Loki, mas o registro "real" no Postgres ainda não tem sha256 preenchido,
+    tentamos localizar um evento recente (com imagem base64) cujo hash bata, e então gravamos sha256 nele.
+    Retorna o ID do evento encontrado, ou None.
+    """
+    sha = _trim(sha)
+    if not sha:
+        return None
+
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 400
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("""
+            SELECT id, imagem
+              FROM eventos
+             WHERE (sha256 IS NULL OR sha256 = '')
+               AND (imagem IS NOT NULL AND imagem <> '')
+             ORDER BY id DESC
+             LIMIT :lim
+        """), {"lim": limit}).all()
+
+        for ev_id, img_b64 in rows:
+            try:
+                calc = _sha1_from_b64_image(img_b64)
+                if calc == sha:
+                    conn.execute(text("""
+                        UPDATE eventos
+                           SET sha256 = :sha
+                         WHERE id = :id
+                           AND (sha256 IS NULL OR sha256 = '')
+                    """), {"sha": sha, "id": int(ev_id)})
+                    return int(ev_id)
+            except Exception:
+                # ignora linhas inválidas e continua
+                pass
+
+    return None
+
+
 def _parse_ts_any(s: str) -> str:
     s = _trim(s)
     if not s:
@@ -965,6 +1008,7 @@ def _ensure_event_from_sha_query(sha: str):
 
 
 @app.route("/confirmar", methods=["GET", "POST"])
+@app.route("/confirmar", methods=["GET", "POST"])
 def confirmar_ui():
     # Proteção: exige ADMIN_KEY via ?key=... (GET) ou form-data key (POST) ou header
     if not _admin_ok():
@@ -1031,19 +1075,76 @@ def confirmar_ui():
     ev_id = int(request.args.get("id") or 0)
     ident = _trim(request.args.get("ident"))
     sha = _trim(request.args.get("sha"))
+    url_img = _trim(request.args.get("url"))  # vem do Grafana/Loki
 
     ev = None
     if ev_id:
         ev = _load_event_by_id(ev_id)
     elif sha:
-        ev = _ensure_event_from_sha_query(sha)
+        # 1) tenta por sha direto
+        ev = _load_event_by_sha(sha)
+
+        # 2) se não achou, tenta "grudar" esse sha em um evento real recente (com imagem base64)
+        if not ev:
+            attached_id = _try_attach_sha_to_recent_events(sha)
+            if attached_id:
+                ev = _load_event_by_id(attached_id)
+
+        # 3) se ainda não achou e veio URL, cria um placeholder (somente como último recurso)
+        if not ev and url_img:
+            with engine.begin() as conn:
+                # evita duplicar placeholder se já existir
+                r = conn.execute(text("""
+                    SELECT id FROM eventos
+                     WHERE sha256 = :sha
+                     ORDER BY id DESC
+                     LIMIT 1
+                """), {"sha": sha}).first()
+
+                if not r:
+                    conn.execute(text("""
+                        INSERT INTO eventos (timestamp, status, objeto, descricao, imagem, img_url,
+                                             identificador, camera_id, camera_name, local,
+                                             descricao_raw, descricao_pt, model_yolo, classes, yolo_conf, yolo_imgsz,
+                                             job_id, sha256, file_name, llava_pt)
+                        VALUES (:ts, :st, :obj, :desc, :img, :img_url,
+                                :ident, :cam_id, :cam_name, :loc,
+                                :raw, :pt, :model, :classes, :conf, :imgsz,
+                                :job, :sha, :fn, :llava)
+                    """), {
+                        "ts": _now_str(),
+                        "st": "ok",
+                        "obj": "Indício (Loki)",
+                        "desc": "",
+                        "img": "",
+                        "img_url": url_img,
+                        "ident": "Loki",
+                        "cam_id": "",
+                        "cam_name": "",
+                        "loc": "",
+                        "raw": "",
+                        "pt": "",
+                        "model": "",
+                        "classes": "",
+                        "conf": "",
+                        "imgsz": "",
+                        "job": sha,
+                        "sha": sha,
+                        "fn": "",
+                        "llava": ""
+                    })
+
+            ev = _load_event_by_sha(sha)
+
     elif ident:
         ev = _load_event_by_ident(ident)
 
     if not ev:
         return "Evento não encontrado (id/sha/ident inválido).", 404
 
-    img_src = (ev.get("img_url") or url_for("img", ev_id=ev["id"], _external=True)) if ev["tem_img"] else ""
+    # se tem imagem no BD, usa /img/<id>; senão, usa a URL externa (do Grafana)
+    img_src = url_for("img", ev_id=ev["id"], _external=True) if ev["tem_img"] else (url_img or "")
+
     return render_template_string(
         CONFIRM_UI_TEMPLATE,
         ev=ev,
