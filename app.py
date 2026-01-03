@@ -1008,7 +1008,6 @@ def _ensure_event_from_sha_query(sha: str):
 
 
 @app.route("/confirmar", methods=["GET", "POST"])
-@app.route("/confirmar", methods=["GET", "POST"])
 def confirmar_ui():
     # Proteção: exige ADMIN_KEY via ?key=... (GET) ou form-data key (POST) ou header
     if not _admin_ok():
@@ -1069,7 +1068,39 @@ def confirmar_ui():
                     "id": ev_id
                 })
 
-        return redirect(next_url)
+                # Após confirmar/desfazer: tenta fechar a aba. Se o browser bloquear, redireciona.
+        html = f"""
+        <!doctype html>
+        <html lang="pt-br">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>Concluído</title>
+          <style>
+            body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif;padding:24px}}
+            a{{color:#2563eb}}
+          </style>
+        </head>
+        <body>
+          <h3>Ação concluída.</h3>
+          <p>Se esta aba não fechar automaticamente, <a href="{next_url}">clique aqui para voltar</a> ou feche manualmente.</p>
+          <script>
+            (function() {{
+              try {{
+                // Tenta fechar (funciona melhor quando a aba foi aberta via clique/ação)
+                window.close();
+              }} catch (e) {{}}
+              // Fallback: volta para o painel
+              setTimeout(function() {{
+                window.location.href = "{next_url}";
+              }}, 300);
+            }})();
+          </script>
+        </body>
+        </html>
+        """
+        return html
+
 
     # GET
     ev_id = int(request.args.get("id") or 0)
