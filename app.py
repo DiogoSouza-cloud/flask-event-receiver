@@ -491,6 +491,24 @@ def index():
 def _now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+
+def _close_window_html(next_url: str, message: str = "Registro atualizado. Você pode fechar esta janela."):
+    """Página HTML que tenta fechar a janela (aba aberta via Grafana).
+    Se o browser bloquear o close(), redireciona para next_url como fallback."""
+    msg = (message or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    nxt = (next_url or "/confirmados").replace('"', '%22')
+    return f"""<!doctype html>
+<html><head><meta charset='utf-8'><title>OK</title></head>
+<body style='font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; padding: 18px;'>
+  <p>{msg}</p>
+  <script>
+    try {{ if (window.opener && window.opener.location) window.opener.location.reload(); }} catch(e) {{}}
+    try {{ window.close(); }} catch(e) {{}}
+    setTimeout(function() {{ try {{ window.close(); }} catch(e) {{}} }}, 250);
+    setTimeout(function() {{ window.location.href = \"{nxt}\"; }}, 800);
+  </script>
+</body></html>"""
+
 def _trim(s):
     return (s or "").strip()
 
@@ -1026,6 +1044,33 @@ def confirmar_ui():
             return "ID inválido.", 400
 
         with engine.begin() as conn:
+            # Bloqueia o registro para evitar confirmação dupla / condições de corrida
+            cur = conn.execute(text("""
+                SELECT id, COALESCE(confirmado,''), COALESCE(sha256,'')
+                  FROM eventos
+                 WHERE id=:id
+                 FOR UPDATE
+            """), {"id": ev_id}).first()
+            if not cur:
+                return "Evento não encontrado.", 404
+            confirmado_cur = (cur[1] or "").strip()
+            sha_cur = (cur[2] or "").strip()
+
+            # Se já existe confirmação para este ID/SHA, não permite confirmar novamente
+            if action != "desconfirmar":
+                if confirmado_cur == CONFIRM_VALUE:
+                    return _close_window_html(next_url, "Este evento já estava confirmado.")
+                if sha_cur:
+                    other_id = conn.execute(text("""
+                        SELECT id
+                          FROM eventos
+                         WHERE sha256=:sha AND confirmado=:c AND id<>:id
+                         ORDER BY id DESC
+                         LIMIT 1
+                    """), {"sha": sha_cur, "c": CONFIRM_VALUE, "id": ev_id}).scalar()
+                    if other_id:
+                        return _close_window_html(next_url, f"Este SHA já foi confirmado (ID {other_id}).")
+
             if action == "desconfirmar":
                 conn.execute(text("""
                     UPDATE eventos
@@ -1069,37 +1114,7 @@ def confirmar_ui():
                 })
 
                 # Após confirmar/desfazer: tenta fechar a aba. Se o browser bloquear, redireciona.
-        html = f"""
-        <!doctype html>
-        <html lang="pt-br">
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1" />
-          <title>Concluído</title>
-          <style>
-            body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif;padding:24px}}
-            a{{color:#2563eb}}
-          </style>
-        </head>
-        <body>
-          <h3>Ação concluída.</h3>
-          <p>Se esta aba não fechar automaticamente, <a href="{next_url}">clique aqui para voltar</a> ou feche manualmente.</p>
-          <script>
-            (function() {{
-              try {{
-                // Tenta fechar (funciona melhor quando a aba foi aberta via clique/ação)
-                window.close();
-              }} catch (e) {{}}
-              // Fallback: volta para o painel
-              setTimeout(function() {{
-                window.location.href = "{next_url}";
-              }}, 300);
-            }})();
-          </script>
-        </body>
-        </html>
-        """
-        return html
+        return _close_window_html(next_url)
 
 
     # GET
@@ -1203,6 +1218,32 @@ def api_confirmar():
         return jsonify({"ok": False, "error": "Campos obrigatórios: id, relato"}), 400
 
     with engine.begin() as conn:
+        # Bloqueia o registro para evitar confirmação dupla / condições de corrida
+        cur = conn.execute(text("""
+            SELECT id, COALESCE(confirmado,''), COALESCE(sha256,'')
+              FROM eventos
+             WHERE id=:id
+             FOR UPDATE
+        """), {"id": ev_id}).first()
+        if not cur:
+            return jsonify({"ok": False, "error": "Evento não encontrado", "id": ev_id}), 404
+        confirmado_cur = (cur[1] or "").strip()
+        sha_cur = (cur[2] or "").strip()
+
+        if confirmado_cur == CONFIRM_VALUE:
+            return jsonify({"ok": True, "already_confirmed": True, "id": ev_id})
+
+        if sha_cur:
+            other_id = conn.execute(text("""
+                SELECT id
+                  FROM eventos
+                 WHERE sha256=:sha AND confirmado=:c AND id<>:id
+                 ORDER BY id DESC
+                 LIMIT 1
+            """), {"sha": sha_cur, "c": CONFIRM_VALUE, "id": ev_id}).scalar()
+            if other_id:
+                return jsonify({"ok": False, "error": "SHA já confirmado em outro registro", "other_id": other_id, "id": ev_id}), 409
+
         # Preenche sha256 automaticamente ao confirmar, se estiver vazio e existir imagem base64
         row = conn.execute(
             text("SELECT COALESCE(sha256,''), COALESCE(imagem,'') FROM eventos WHERE id=:id"),
