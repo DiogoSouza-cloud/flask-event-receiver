@@ -544,6 +544,8 @@ def receber_evento():
     camera_name = _trim(dados.get("camera_name"))
     local       = _trim(dados.get("local"))
 
+    img_url     = _trim(dados.get("img_url") or dados.get("url") or dados.get("image_url") or dados.get("img") or "")
+
     # Preferir YOLO puro se vier no campo dedicado
     yolo_desc_in = _trim(dados.get("descricao_yolo_pt"))
     desc_raw_in  = _trim(dados.get("descricao_raw") or dados.get("description"))
@@ -573,7 +575,7 @@ def receber_evento():
         "objeto": dados.get("object", ""),
         "descricao": (yolo_desc_in or "").replace("\n", "<br>"),
         "imagem": img_b64,
-        "img_url": "",
+        "img_url": img_url,
         "identificador": dados.get("identificador", "desconhecido"),
         "camera_id": camera_id,
         "camera_name": camera_name,
@@ -943,6 +945,117 @@ def _try_attach_sha_to_recent_events(sha: str, limit: int = 400):
     return None
 
 
+
+def _infer_meta_from_url(url_img: str):
+    """Extrai camera_id/camera_name e timestamp do nome do arquivo na URL.
+    Padrões suportados:
+      - .../cam1_YYYYMMDD_HHMMSS_123.jpg  -> camera_id=1
+      - .../C%C3%A2mera%20Especial_YYYYMMDD_HHMMSS_123.jpg -> camera_name="Câmera Especial"
+    Retorna (camera_id, camera_name, ts_db_str) ou ("","","") se falhar.
+    """
+    url_img = _trim(url_img)
+    if not url_img:
+        return ("", "", "")
+
+    try:
+        from urllib.parse import urlparse, unquote
+        p = urlparse(url_img)
+        base = unquote((p.path or "").split("/")[-1])
+    except Exception:
+        base = url_img.split("/")[-1]
+
+    base = _trim(base)
+    if not base:
+        return ("", "", "")
+
+    name = base.rsplit(".", 1)[0]  # sem extensão
+
+    m = re.search(r"_(\d{8})_(\d{6})_", name)
+    if not m:
+        return ("", "", "")
+
+    ymd, hms = m.group(1), m.group(2)
+    try:
+        ts = datetime.strptime(ymd + hms, "%Y%m%d%H%M%S")
+        ts_db = ts.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        ts_db = ""
+
+    prefix = _trim(name[:m.start()])  # parte antes do _YYYYMMDD...
+
+    camera_id = ""
+    camera_name = ""
+
+    m2 = re.match(r"^cam(\d+)$", prefix, flags=re.IGNORECASE)
+    if m2:
+        camera_id = m2.group(1)
+    else:
+        camera_name = prefix
+
+    return (camera_id, camera_name, ts_db)
+
+
+def _try_attach_sha_by_urlmeta(sha: str, url_img: str, window_seconds: int = 8):
+    """Tenta localizar um evento já existente no Postgres (sem sha256) que corresponda à URL,
+    e grava sha256 nele. Evita criar placeholder com novo ID.
+    """
+    sha = _trim(sha)
+    url_img = _trim(url_img)
+    if not sha or not url_img:
+        return None
+
+    cam_id, cam_name, ts_db = _infer_meta_from_url(url_img)
+    if not ts_db or (not cam_id and not cam_name):
+        return None
+
+    try:
+        center = datetime.strptime(ts_db, "%Y-%m-%d %H:%M:%S")
+        t0 = (center - timedelta(seconds=window_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        t1 = (center + timedelta(seconds=window_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+    with engine.begin() as conn:
+        row = None
+
+        if cam_id:
+            row = conn.execute(text("""
+                SELECT id
+                  FROM eventos
+                 WHERE COALESCE(sha256,'') = ''
+                   AND timestamp BETWEEN :t0 AND :t1
+                   AND camera_id = :cam_id
+                 ORDER BY id DESC
+                 LIMIT 1
+            """), {"t0": t0, "t1": t1, "cam_id": cam_id}).first()
+
+        if not row and cam_name:
+            row = conn.execute(text("""
+                SELECT id
+                  FROM eventos
+                 WHERE COALESCE(sha256,'') = ''
+                   AND timestamp BETWEEN :t0 AND :t1
+                   AND camera_name = :cam_name
+                 ORDER BY id DESC
+                 LIMIT 1
+            """), {"t0": t0, "t1": t1, "cam_name": cam_name}).first()
+
+        if not row:
+            return None
+
+        ev_id = int(row[0])
+
+        conn.execute(text("""
+            UPDATE eventos
+               SET sha256 = :sha,
+                   img_url = COALESCE(NULLIF(img_url,''), :url)
+             WHERE id = :id
+               AND COALESCE(sha256,'') = ''
+        """), {"sha": sha, "url": url_img, "id": ev_id})
+
+        return ev_id
+
+
 def _parse_ts_any(s: str) -> str:
     s = _trim(s)
     if not s:
@@ -1133,6 +1246,12 @@ def confirmar_ui():
         # 2) se não achou, tenta "grudar" esse sha em um evento real recente (com imagem base64)
         if not ev:
             attached_id = _try_attach_sha_to_recent_events(sha)
+            if attached_id:
+                ev = _load_event_by_id(attached_id)
+
+        # 2.1) se ainda não achou, tenta achar um evento já gravado (sem sha256) pelo timestamp/câmera extraídos da URL
+        if not ev and url_img:
+            attached_id = _try_attach_sha_by_urlmeta(sha, url_img)
             if attached_id:
                 ev = _load_event_by_id(attached_id)
 
