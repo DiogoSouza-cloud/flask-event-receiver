@@ -22,6 +22,23 @@ UPDATE_WINDOW_SEC = int(os.getenv("UPDATE_WINDOW_SEC", "15"))
 
 CONFIRM_VALUE = "SIM"
 
+
+# Qualificação de Incidente (lista fixa – usada na UI de confirmação)
+QUALIFICACOES_INCIDENTE_FIXAS = [
+    "Tentativa de acesso não autorizado",
+    "Furto",
+    "Dano ao patrimônio público ou privado",
+    "Roubo",
+    "Ostentação de arma de fogo",
+    "Porte de arma oculta",
+    "Acidente em via pública",
+    "Agressão física sem arma",
+    "Ataque com arma branca",
+    "Ataque com arma de fogo",
+    "Violência sexual",
+    "Conflito generalizado",
+]
+
 engine = create_engine(DB_URL, pool_pre_ping=True, future=True)
 BACKEND = engine.url.get_backend_name()
 
@@ -72,6 +89,24 @@ eventos_tb = Table(
     Column("relato_operador", Text),
     Column("confirmado_por", Text),
     Column("confirmado_em", Text),
+)
+
+
+# Catálogo de qualificações (fixo) + vínculo evento <-> qualificação (multi-seleção)
+qualificacoes_tb = Table(
+    "qualificacoes_incidente",
+    md,
+    Column("id", Integer, primary_key=True),
+    Column("nome", Text, nullable=False, unique=True),
+)
+
+evento_qual_tb = Table(
+    "evento_qualificacao",
+    md,
+    Column("evento_id", Integer, nullable=False),
+    Column("qualificacao_id", Integer, nullable=False),
+    # PK auxiliar para compatibilidade (evita duplicação via UNIQUE abaixo)
+    Column("id", Integer, primary_key=True, autoincrement=True),
 )
 
 def _ensure_columns():
@@ -139,8 +174,23 @@ def _ensure_columns():
 def init_db():
     md.create_all(engine)
     _ensure_columns()
-    os.makedirs("static", exist_ok=True)
-    os.makedirs(os.path.join("static", "ev"), exist_ok=True)
+
+    # Garante que o catálogo fixo de qualificações exista
+    _seed_qualificacoes_incidente()
+
+    # Evita duplicações no vínculo (mesmo evento + mesma qualificação)
+    with engine.begin() as conn:
+        try:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_evento_qual ON evento_qualificacao (evento_id, qualificacao_id)"
+                )
+            )
+        except Exception:
+            pass
+
+    os.makedirs(IMAGES_DIR, exist_ok=True)
+    os.makedirs(UPLOADED_DIR, exist_ok=True)
 
 def salvar_evento(ev: dict):
     with engine.begin() as conn:
@@ -291,6 +341,14 @@ HTML_TEMPLATE = """
     .pager{ display:flex; gap:12px; margin-top:18px } .pager a{ color:#2563eb; text-decoration:none; font-size:14px }
     .sep{ height:1px; background:var(--line); margin:10px 0 }
     .confirmBox{ background:#fafafa; border:1px solid var(--line); border-radius:10px; padding:10px; }
+
+.qbox{margin-top:12px;border:1px solid #e5e7eb;border-radius:12px;padding:12px;background:#fff;}
+.qtitle{font-weight:700;margin-bottom:4px;}
+.qhint{font-size:12px;color:#6b7280;margin-bottom:10px;}
+.qitems{max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding-right:6px;}
+.qitem{display:flex;gap:10px;align-items:flex-start;font-size:14px;line-height:1.2;}
+.qitem input{margin-top:2px;}
+
   </style>
 </head>
 <body>
@@ -490,6 +548,50 @@ def index():
 
 def _now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _is_postgres() -> bool:
+    try:
+        return engine.dialect.name.lower().startswith("postgres")
+    except Exception:
+        return False
+
+
+def _seed_qualificacoes_incidente():
+    # Insere a lista fixa se não existir (idempotente)
+    with engine.begin() as conn:
+        if _is_postgres():
+            sql = text("INSERT INTO qualificacoes_incidente (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING")
+        else:
+            sql = text("INSERT OR IGNORE INTO qualificacoes_incidente (nome) VALUES (:n)")
+        for nome in QUALIFICACOES_INCIDENTE_FIXAS:
+            conn.execute(sql, {"n": nome})
+
+
+def _list_qualificacoes_incidente():
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT id, nome FROM qualificacoes_incidente ORDER BY id")).fetchall()
+    return [{"id": int(r[0]), "nome": r[1]} for r in rows]
+
+
+def _get_event_qual_ids(ev_id: int):
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT qualificacao_id FROM evento_qualificacao WHERE evento_id=:id ORDER BY qualificacao_id"),
+            {"id": ev_id},
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def _set_event_qual_ids(conn, ev_id: int, qual_ids):
+    # Atualiza o vínculo de forma determinística
+    conn.execute(text("DELETE FROM evento_qualificacao WHERE evento_id=:id"), {"id": ev_id})
+    for qid in qual_ids:
+        conn.execute(
+            text("INSERT INTO evento_qualificacao (evento_id, qualificacao_id) VALUES (:eid, :qid)"),
+            {"eid": ev_id, "qid": int(qid)},
+        )
+
 
 
 def _close_window_html(next_url: str, message: str = "Registro atualizado. Você pode fechar esta janela."):
@@ -786,6 +888,18 @@ CONFIRM_UI_TEMPLATE = """
           {% else %}
             <div class="muted">Evento sem imagem salva.</div>
           {% endif %}
+        </div>
+        <div class="qbox">
+          <div class="qtitle">Qualificação do Incidente</div>
+          <div class="qhint">Selecione uma ou mais opções:</div>
+          <div class="qitems">
+            {% for q in all_quals %}
+              <label class="qitem">
+                <input type="checkbox" name="qual_ids" value="{{ q.id }}" {% if q.id in selected_qual_ids %}checked{% endif %}>
+                <span>{{ q.nome }}</span>
+              </label>
+            {% endfor %}
+          </div>
         </div>
         <div>
           <div class="kv"><b>ID:</b> {{ ev.id }}</div>
@@ -1153,6 +1267,14 @@ def confirmar_ui():
         relato = _trim(request.form.get("relato"))
         operador = _trim(request.form.get("operador"))
 
+# múltipla seleção (checkboxes)
+qual_ids = []
+for v in request.form.getlist("qual_ids"):
+    try:
+        qual_ids.append(int(v))
+    except Exception:
+        pass
+
         if ev_id <= 0:
             return "ID inválido.", 400
 
@@ -1193,6 +1315,7 @@ def confirmar_ui():
                            confirmado_em=''
                      WHERE id=:id
                 """), {"id": ev_id})
+                _set_event_qual_ids(conn, ev_id, [])
             else:
                 if not relato:
                     return "Relato é obrigatório para confirmar.", 400
@@ -1310,12 +1433,17 @@ def confirmar_ui():
     # se tem imagem no BD, usa /img/<id>; senão, usa a URL externa (do Grafana)
     img_src = url_for("img", ev_id=ev["id"], _external=True) if ev["tem_img"] else (url_img or "")
 
+    all_quals = _list_qualificacoes_incidente()
+    selected_qual_ids = _get_event_qual_ids(ev["id"]) if ev and ev.get("id") else set()
+
     return render_template_string(
         CONFIRM_UI_TEMPLATE,
         ev=ev,
         img_src=img_src,
         next_url=next_url,
         key_value=key_value,
+        all_quals=all_quals,
+        selected_qual_ids=selected_qual_ids,
     )
 
 
