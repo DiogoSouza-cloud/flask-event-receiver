@@ -670,9 +670,9 @@ def receber_evento():
     file_name   = _trim(dados.get("file_name"))
     img_b64     = _trim(dados.get("image"))
 
-# Se não veio hash, calcula uma vez por evento (evita varreduras caras no /confirmar)
-if not sha256 and img_b64:
-    sha256 = _sha1_from_b64_image(img_b64)
+    # Se não veio hash, calcula uma vez por evento (evita varreduras caras no /confirmar)
+    if not sha256 and img_b64:
+        sha256 = _sha1_from_b64_image(img_b64)
 
     llava_pt_in = _trim(dados.get("llava_pt")) or ""
     if not llava_pt_in:
