@@ -25,6 +25,11 @@ CONFIRM_VALUE = "SIM"
 engine = create_engine(DB_URL, pool_pre_ping=True, future=True)
 BACKEND = engine.url.get_backend_name()
 
+# Armazenar imagem base64 no BD consome muita RAM (e o BD cresce rápido).
+# Em produção (PostgreSQL), preferir salvar apenas img_url e NÃO salvar o base64.
+_DEFAULT_STORE_B64 = "1" if BACKEND == "sqlite" else "0"
+STORE_IMAGE_B64 = os.getenv("STORE_IMAGE_B64", _DEFAULT_STORE_B64).strip().lower() in ("1", "true", "yes", "y")
+
 def _sqlite_db_path_from_url(db_url: str) -> str:
     u = urlparse(db_url)
     if u.scheme != "sqlite":
@@ -236,7 +241,7 @@ def salvar_evento(ev: dict):
 def buscar_eventos(filtro=None, data=None, status=None, confirmado=None, limit=50, offset=0):
     sql = [
         "SELECT id, timestamp, status, objeto, descricao, identificador,",
-        "CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS tem_img,",
+        "CASE WHEN (imagem IS NULL OR imagem = '') AND COALESCE(img_url,'') = '' THEN 0 ELSE 1 END AS tem_img,",
         "COALESCE(img_url,'') AS img_url,",
         "COALESCE(camera_id,'') AS camera_id,",
         "COALESCE(camera_name,'') AS camera_name,",
@@ -402,7 +407,11 @@ HTML_TEMPLATE = """
         <div class="grid">
           <div>
             {% if e.tem_img %}
-              <img class="thumb" src="{{ url_for('img', ev_id=e.id) }}" loading="lazy" alt="frame do evento">
+              {% if e.img_url %}
+                <img class="thumb" src="{{ e.img_url }}" loading="lazy" alt="frame do evento">
+              {% else %}
+                <img class="thumb" src="{{ url_for('img', ev_id=e.id) }}" loading="lazy" alt="frame do evento">
+              {% endif %}
             {% else %}
               <div class="thumb"></div>
             {% endif %}
@@ -659,7 +668,7 @@ def receber_evento():
         "status": "alerta" if dados.get("detected") else "ok",
         "objeto": dados.get("object", ""),
         "descricao": (yolo_desc_in or "").replace("\n", "<br>"),
-        "imagem": img_b64,
+        "imagem": (img_b64 if (img_b64 and (STORE_IMAGE_B64 or not img_url)) else ""),
         "img_url": img_url,
         "identificador": dados.get("identificador", "desconhecido"),
         "camera_id": camera_id,
@@ -672,7 +681,7 @@ def receber_evento():
         "yolo_conf": yolo_conf,
         "yolo_imgsz": yolo_imgsz,
         "job_id": job_id or sha256,
-        "sha256": sha256,
+        "sha256": sha_in or sha256,
         "file_name": file_name,
         "llava_pt": llava_pt_in,
     }
@@ -984,39 +993,64 @@ CONFIRM_UI_TEMPLATE = """
 """
 
 def _load_event_by_id(ev_id: int):
+    if not ev_id:
+        return None
+
     with engine.begin() as conn:
         r = conn.execute(text("""
-            SELECT id, timestamp, status, objeto, descricao, identificador,
-                   CASE
-                     WHEN (imagem IS NULL OR imagem = '') AND COALESCE(img_url,'') = '' THEN 0
-                     ELSE 1
-                   END AS tem_img,
-                   COALESCE(img_url,'') AS img_url,
-                   COALESCE(camera_id,''), COALESCE(camera_name,''), COALESCE(local,''),
-                   COALESCE(llava_pt,'')
+            SELECT
+                id,
+                "timestamp",
+                COALESCE(camera_id,'')       AS camera_id,
+                COALESCE(camera_name,'')     AS camera_name,
+                COALESCE(local,'')           AS local,
+                COALESCE(status,'')          AS status,
+                COALESCE(identificador,'')   AS identificador,
+                COALESCE(objeto,'')          AS objeto,
+                COALESCE(yolo,'')            AS yolo,
+                COALESCE(llava_pt,'')        AS llava_pt,
+                COALESCE(relato_operador,'') AS relato_operador,
+                COALESCE(confirmado_por,'')  AS confirmado_por,
+                COALESCE(confirmado_em,'')   AS confirmado_em,
+                COALESCE(confirmado,'')      AS confirmado,
+
+                -- IMPORTANTE: manter sha no objeto carregado
+                COALESCE(sha256,'')          AS sha256,
+
+                -- IMPORTANTE: tem_img aqui significa "tem BASE64", não "tem url"
+                CASE WHEN imagem IS NOT NULL AND imagem <> '' THEN 1 ELSE 0 END AS tem_img_b64,
+
+                -- url separada
+                COALESCE(img_url,'')         AS img_url
+
             FROM eventos
-            WHERE id=:id
-        """), {"id": ev_id}).first()
+            WHERE id = :id
+            LIMIT 1
+        """), {"id": int(ev_id)}).mappings().first()
+
     if not r:
         return None
 
-    desc_html = (r[4] or "")
-    desc_plain = desc_html.replace("<br>", "\n")
-
     return {
-        "id": r[0],
-        "timestamp": r[1] or "",
-        "status": r[2] or "",
-        "objeto": r[3] or "",
-        "descricao_plain": desc_plain.strip(),
-        "identificador": r[5] or "",
-        "tem_img": bool(r[6]),
-        "img_url": r[7] or "",
-        "camera_id": r[8] or "",
-        "camera_name": r[9] or "",
-        "local": r[10] or "",
-        "llava_pt": r[11] or "",
+        "id": int(r["id"]),
+        "timestamp": r["timestamp"] or "",
+        "camera_id": r["camera_id"] or "",
+        "camera_name": r["camera_name"] or "",
+        "local": r["local"] or "",
+        "status": r["status"] or "",
+        "identificador": r["identificador"] or "",
+        "objeto": r["objeto"] or "",
+        "yolo": r["yolo"] or "",
+        "llava_pt": r["llava_pt"] or "",
+        "relato_operador": r["relato_operador"] or "",
+        "confirmado_por": r["confirmado_por"] or "",
+        "confirmado_em": r["confirmado_em"] or "",
+        "confirmado": r["confirmado"] or "",
+        "sha256": r["sha256"] or "",
+        "tem_img": bool(r["tem_img_b64"]),
+        "img_url": r["img_url"] or "",
     }
+
 
 
 
@@ -1051,49 +1085,49 @@ def _load_event_by_sha(sha: str):
         return None
     return _load_event_by_id(int(r[0]))
 
-def _try_attach_sha_to_recent_events(sha: str, limit: int = 400):
+def _try_attach_sha_to_recent_events(sha: str, limit: int = 120, batch: int = 20):
+    """Tenta achar (entre eventos recentes) um registro sem sha256, cujo `imagem` (base64) gere o mesmo hash.
+
+    Importante: NÃO faz fetchall de blobs grandes (evita estourar RAM em planos 512MB).
     """
-    Quando vem um sha do Loki, mas o registro "real" no Postgres ainda não tem sha256 preenchido,
-    tentamos localizar um evento recente (com imagem base64) cujo hash bata, e então gravamos sha256 nele.
-    Retorna o ID do evento encontrado, ou None.
-    """
-    sha = _trim(sha)
-    if not sha:
+    sha = (sha or "").strip()
+    if not sha or len(sha) < 8:
         return None
 
-    try:
-        limit = int(limit)
-    except Exception:
-        limit = 400
-
     with engine.begin() as conn:
-        rows = conn.execute(text("""
-            SELECT id, imagem
-              FROM eventos
-             WHERE (sha256 IS NULL OR sha256 = '')
-               AND (imagem IS NOT NULL AND imagem <> '')
-             ORDER BY id DESC
-             LIMIT :lim
-        """), {"lim": limit}).all()
+        result = conn.execution_options(stream_results=True).execute(
+            text("""
+                SELECT id, imagem
+                  FROM eventos
+                 WHERE (sha256 IS NULL OR sha256 = '')
+                   AND imagem IS NOT NULL AND imagem <> ''
+                 ORDER BY id DESC
+                 LIMIT :lim
+            """),
+            {"lim": int(limit)}
+        )
 
-        for ev_id, img_b64 in rows:
-            try:
-                calc = _sha1_from_b64_image(img_b64)
-                if calc == sha:
-                    conn.execute(text("""
-                        UPDATE eventos
-                           SET sha256 = :sha
-                         WHERE id = :id
-                           AND (sha256 IS NULL OR sha256 = '')
-                    """), {"sha": sha, "id": int(ev_id)})
-                    return int(ev_id)
-            except Exception:
-                # ignora linhas inválidas e continua
-                pass
+        while True:
+            rows = result.fetchmany(int(batch))
+            if not rows:
+                break
+
+            for ev_id, img_b64 in rows:
+                if not img_b64:
+                    continue
+                try:
+                    sha_calc = _sha1_from_b64_image(img_b64)
+                    if sha_calc and sha_calc.lower() == sha.lower():
+                        conn.execute(
+                            text("UPDATE eventos SET sha256=:sha WHERE id=:id"),
+                            {"sha": sha, "id": int(ev_id)}
+                        )
+                        return int(ev_id)
+                except Exception:
+                    # ignora linha inválida e continua
+                    pass
 
     return None
-
-
 
 def _infer_meta_from_url(url_img: str):
     """Extrai camera_id/camera_name e timestamp do nome do arquivo na URL.
@@ -1468,8 +1502,12 @@ def confirmar_ui():
     if not ev:
         return "Evento não encontrado (id/sha/ident inválido).", 404
 
-    # se tem imagem no BD, usa /img/<id>; senão, usa a URL externa (do Grafana)
-    img_src = url_for("img", ev_id=ev["id"], _external=True) if ev["tem_img"] else (url_img or "")
+   
+    # Preferir URL externa quando existir; só usa /img/<id> quando houver base64 no BD
+    img_src = (ev.get("img_url") or "").strip()
+    if not img_src and ev.get("tem_img"):
+        img_src = url_for("img", ev_id=ev["id"], _external=True)
+
 
     qualificacoes = _listar_qualificacoes()
     qual_sel = _qualificacoes_do_evento(ev["id"]) if ev and ev.get("id") else set()
