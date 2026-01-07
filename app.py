@@ -561,6 +561,26 @@ def img(ev_id: int):
 # -------------------- Helpers de parsing --------------------
 _LAVA_MARKER = re.compile(r"(?:^|\n)\s*🌐\s*Analisar\s+local:\s*", re.IGNORECASE)
 
+def _has_column(table: str, column: str, schema: str = "public") -> bool:
+    try:
+        with engine.begin() as conn:
+            r = conn.execute(text("""
+                SELECT 1
+                  FROM information_schema.columns
+                 WHERE table_schema = :s
+                   AND table_name   = :t
+                   AND column_name  = :c
+                 LIMIT 1
+            """), {"s": schema, "t": table, "c": column}).first()
+        return r is not None
+    except Exception:
+        return False
+
+
+# Flags de compatibilidade (evita quebra se o schema variar)
+HAS_YOLO_COL = _has_column("eventos", "yolo")
+
+
 def _split_yolo_llava(desc: str):
     if not desc:
         return "", ""
@@ -996,37 +1016,40 @@ def _load_event_by_id(ev_id: int):
     if not ev_id:
         return None
 
+    yolo_select = "COALESCE(yolo,'') AS yolo," if HAS_YOLO_COL else "'' AS yolo,"
+
+    sql = f"""
+        SELECT
+            id,
+            "timestamp",
+            COALESCE(camera_id,'')       AS camera_id,
+            COALESCE(camera_name,'')     AS camera_name,
+            COALESCE(local,'')           AS local,
+            COALESCE(status,'')          AS status,
+            COALESCE(identificador,'')   AS identificador,
+            COALESCE(objeto,'')          AS objeto,
+            {yolo_select}
+            COALESCE(llava_pt,'')        AS llava_pt,
+            COALESCE(relato_operador,'') AS relato_operador,
+            COALESCE(confirmado_por,'')  AS confirmado_por,
+            COALESCE(confirmado_em,'')   AS confirmado_em,
+            COALESCE(confirmado,'')      AS confirmado,
+
+            COALESCE(sha256,'')          AS sha256,
+
+            -- tem_img aqui = tem BASE64 (imagem), não URL
+            CASE WHEN imagem IS NOT NULL AND imagem <> '' THEN 1 ELSE 0 END AS tem_img_b64,
+
+            -- URL externa separada
+            COALESCE(img_url,'')         AS img_url
+
+        FROM eventos
+        WHERE id = :id
+        LIMIT 1
+    """
+
     with engine.begin() as conn:
-        r = conn.execute(text("""
-            SELECT
-                id,
-                "timestamp",
-                COALESCE(camera_id,'')       AS camera_id,
-                COALESCE(camera_name,'')     AS camera_name,
-                COALESCE(local,'')           AS local,
-                COALESCE(status,'')          AS status,
-                COALESCE(identificador,'')   AS identificador,
-                COALESCE(objeto,'')          AS objeto,
-                COALESCE(yolo,'')            AS yolo,
-                COALESCE(llava_pt,'')        AS llava_pt,
-                COALESCE(relato_operador,'') AS relato_operador,
-                COALESCE(confirmado_por,'')  AS confirmado_por,
-                COALESCE(confirmado_em,'')   AS confirmado_em,
-                COALESCE(confirmado,'')      AS confirmado,
-
-                -- IMPORTANTE: manter sha no objeto carregado
-                COALESCE(sha256,'')          AS sha256,
-
-                -- IMPORTANTE: tem_img aqui significa "tem BASE64", não "tem url"
-                CASE WHEN imagem IS NOT NULL AND imagem <> '' THEN 1 ELSE 0 END AS tem_img_b64,
-
-                -- url separada
-                COALESCE(img_url,'')         AS img_url
-
-            FROM eventos
-            WHERE id = :id
-            LIMIT 1
-        """), {"id": int(ev_id)}).mappings().first()
+        r = conn.execute(text(sql), {"id": int(ev_id)}).mappings().first()
 
     if not r:
         return None
@@ -1040,7 +1063,7 @@ def _load_event_by_id(ev_id: int):
         "status": r["status"] or "",
         "identificador": r["identificador"] or "",
         "objeto": r["objeto"] or "",
-        "yolo": r["yolo"] or "",
+        "yolo": r.get("yolo", "") or "",
         "llava_pt": r["llava_pt"] or "",
         "relato_operador": r["relato_operador"] or "",
         "confirmado_por": r["confirmado_por"] or "",
@@ -1050,7 +1073,6 @@ def _load_event_by_id(ev_id: int):
         "tem_img": bool(r["tem_img_b64"]),
         "img_url": r["img_url"] or "",
     }
-
 
 
 
