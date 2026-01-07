@@ -6,9 +6,11 @@ from urllib.parse import urlparse
 import re
 import hashlib
 
-from flask import Flask, request, jsonify, render_template_string, url_for, send_file, abort, redirect
+from flask import Flask, request, jsonify, url_for, send_file, abort, redirect
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
 from sqlalchemy.sql import text
+from sqlalchemy.pool import NullPool
+
 
 # -------------------- Config --------------------
 DB_URL = os.getenv("DATABASE_URL", "sqlite:///eventos.db")
@@ -22,7 +24,19 @@ UPDATE_WINDOW_SEC = int(os.getenv("UPDATE_WINDOW_SEC", "15"))
 
 CONFIRM_VALUE = "SIM"
 
-engine = create_engine(DB_URL, pool_pre_ping=True, future=True)
+# Pool pequeno para reduzir RAM em planos free (pode ajustar via env)
+_DB_POOL_SIZE    = int(os.getenv("DB_POOL_SIZE", "2"))
+_DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "0"))
+_DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))  # segundos
+
+_engine_kwargs = dict(pool_pre_ping=True, future=True)
+# Em casos extremos, você pode forçar NullPool (sem pool) definindo SQLALCHEMY_NULLPOOL=1
+if os.getenv("SQLALCHEMY_NULLPOOL", "0") == "1":
+    _engine_kwargs["poolclass"] = NullPool
+else:
+    _engine_kwargs.update(pool_size=_DB_POOL_SIZE, max_overflow=_DB_MAX_OVERFLOW, pool_recycle=_DB_POOL_RECYCLE)
+
+engine = create_engine(DB_URL, **_engine_kwargs)
 BACKEND = engine.url.get_backend_name()
 
 def _sqlite_db_path_from_url(db_url: str) -> str:
@@ -473,6 +487,12 @@ HTML_TEMPLATE = """
 # -------------------- App --------------------
 app = Flask(__name__)
 
+# Pré-compila templates para reduzir alocações por request
+_MAIN_TEMPLATE = app.jinja_env.from_string(HTML_TEMPLATE)
+
+def _render_main(**ctx):
+    return _MAIN_TEMPLATE.render(**ctx)
+
 _TRANSPARENT_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
 
 @app.route("/logo-fallback.png")
@@ -649,6 +669,10 @@ def receber_evento():
     sha256 = _trim(dados.get("sha256") or dados.get("img_hash") or dados.get("sha"))
     file_name   = _trim(dados.get("file_name"))
     img_b64     = _trim(dados.get("image"))
+
+# Se não veio hash, calcula uma vez por evento (evita varreduras caras no /confirmar)
+if not sha256 and img_b64:
+    sha256 = _sha1_from_b64_image(img_b64)
 
     llava_pt_in = _trim(dados.get("llava_pt")) or ""
     if not llava_pt_in:
@@ -982,6 +1006,12 @@ CONFIRM_UI_TEMPLATE = """
 </body>
 </html>
 """
+# Pré-compila template de confirmação para reduzir alocações por request
+_CONFIRM_TEMPLATE = app.jinja_env.from_string(CONFIRM_UI_TEMPLATE)
+
+def _render_confirm(**ctx):
+    return _CONFIRM_TEMPLATE.render(**ctx)
+
 
 def _load_event_by_id(ev_id: int):
     with engine.begin() as conn:
@@ -1055,6 +1085,8 @@ def _try_attach_sha_to_recent_events(sha: str, limit: int = 400):
     """
     Quando vem um sha do Loki, mas o registro "real" no Postgres ainda não tem sha256 preenchido,
     tentamos localizar um evento recente (com imagem base64) cujo hash bata, e então gravamos sha256 nele.
+
+    Otimização: itera em streaming (sem .all()) para não carregar dezenas/centenas de imagens base64 em RAM.
     Retorna o ID do evento encontrado, ou None.
     """
     sha = _trim(sha)
@@ -1067,16 +1099,19 @@ def _try_attach_sha_to_recent_events(sha: str, limit: int = 400):
         limit = 400
 
     with engine.begin() as conn:
-        rows = conn.execute(text("""
-            SELECT id, imagem
-              FROM eventos
-             WHERE (sha256 IS NULL OR sha256 = '')
-               AND (imagem IS NOT NULL AND imagem <> '')
-             ORDER BY id DESC
-             LIMIT :lim
-        """), {"lim": limit}).all()
+        result = conn.execution_options(stream_results=True).execute(
+            text("""
+                SELECT id, imagem
+                  FROM eventos
+                 WHERE (sha256 IS NULL OR sha256 = '')
+                   AND (imagem IS NOT NULL AND imagem <> '')
+                 ORDER BY id DESC
+                 LIMIT :lim
+            """),
+            {"lim": limit},
+        )
 
-        for ev_id, img_b64 in rows:
+        for ev_id, img_b64 in result:
             try:
                 calc = _sha1_from_b64_image(img_b64)
                 if calc == sha:
@@ -1089,7 +1124,7 @@ def _try_attach_sha_to_recent_events(sha: str, limit: int = 400):
                     return int(ev_id)
             except Exception:
                 # ignora linhas inválidas e continua
-                pass
+                continue
 
     return None
 
@@ -1474,8 +1509,7 @@ def confirmar_ui():
     qualificacoes = _listar_qualificacoes()
     qual_sel = _qualificacoes_do_evento(ev["id"]) if ev and ev.get("id") else set()
 
-    return render_template_string(
-        CONFIRM_UI_TEMPLATE,
+    return _render_confirm(
         ev=ev,
         img_src=img_src,
         next_url=next_url,
@@ -1594,8 +1628,7 @@ def historico():
     page = max(int(request.args.get("page") or 1), 1)
     evs = buscar_eventos(filtro if filtro else None, data if data else None,
                          status=None, confirmado=None, limit=50, offset=(page-1)*50)
-    return render_template_string(
-        HTML_TEMPLATE,
+    return _render_main(
         page_title="Painel Histórico",
         eventos=evs,
         filtro=filtro,
@@ -1633,8 +1666,7 @@ def alertas():
         except ValueError:
             continue
 
-    return render_template_string(
-        HTML_TEMPLATE,
+    return _render_main(
         page_title="Painel de Alertas",
         eventos=recentes,
         filtro=raw,
@@ -1659,8 +1691,7 @@ def indicios():
         offset=(page-1)*50
     )
 
-    return render_template_string(
-        HTML_TEMPLATE,
+    return _render_main(
         page_title="Indícios de Violência",
         eventos=evs,
         filtro=filtro,
@@ -1685,8 +1716,7 @@ def confirmados():
         offset=(page-1)*50
     )
 
-    return render_template_string(
-        HTML_TEMPLATE,
+    return _render_main(
         page_title="Violência Confirmada",
         eventos=evs,
         filtro=filtro,
