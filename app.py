@@ -1092,20 +1092,31 @@ def _load_event_by_ident(ident: str):
     return _load_event_by_id(int(r[0]))
 
 def _load_event_by_sha(sha: str):
-    sha = _trim(sha)
+    sha = (sha or "").strip()
     if not sha:
         return None
+
     with engine.begin() as conn:
+        # Escolhe o "melhor" evento para este sha:
+        # 1) Preferir quem tem llava_pt preenchido
+        # 2) Depois quem tem objeto preenchido
+        # 3) Depois o mais recente (id desc)
         r = conn.execute(text("""
             SELECT id
-            FROM eventos
-            WHERE sha256 = :sha
-            ORDER BY id DESC
-            LIMIT 1
+              FROM eventos
+             WHERE COALESCE(sha256,'') = :sha
+             ORDER BY
+               CASE WHEN COALESCE(llava_pt,'') <> '' THEN 1 ELSE 0 END DESC,
+               CASE WHEN COALESCE(objeto,'')   <> '' THEN 1 ELSE 0 END DESC,
+               id DESC
+             LIMIT 1
         """), {"sha": sha}).first()
+
     if not r:
         return None
+
     return _load_event_by_id(int(r[0]))
+
 
 def _try_attach_sha_to_recent_events(sha: str, limit: int = 120, batch: int = 20):
     """Tenta achar (entre eventos recentes) um registro sem sha256, cujo `imagem` (base64) gere o mesmo hash.
