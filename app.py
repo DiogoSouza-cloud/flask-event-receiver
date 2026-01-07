@@ -827,152 +827,122 @@ def receber_resposta_ia():
 # -------------------- UI de confirmação (navegador) --------------------
 CONFIRM_UI_TEMPLATE = """
 <!doctype html>
-<html lang="pt-BR">
+<html lang="pt-br">
 <head>
-  <meta charset="utf-8">
-  <title>Confirmar Violência</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Confirmar caso real de Violência</title>
   <style>
-    :root{ --bg:#f7f7f8; --card:#fff; --line:#e5e7eb; --ink:#111827; --muted:#6b7280; --ok:#16a34a; --no:#dc2626; }
-    *{box-sizing:border-box}
-    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--ink)}
-    .wrap{max-width:1100px;margin:0 auto;padding:18px}
-    .top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
-    .top a{color:#2563eb;text-decoration:none}
-    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
-    .grid{display:grid;grid-template-columns:420px 1fr;gap:16px}
-    @media(max-width:980px){.grid{grid-template-columns:1fr}}
-    img{width:100%;border-radius:12px;border:1px solid var(--line);object-fit:cover;background:#f3f4f6}
-    .kv{margin:6px 0;font-size:14px}
-    .kv b{display:inline-block;min-width:160px;color:#374151}
-    textarea,input{width:100%;border:1px solid var(--line);border-radius:12px;padding:10px;font-size:14px;background:#fff}
-    textarea{min-height:120px;resize:vertical}
-    .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
-    .btn{border:0;border-radius:12px;padding:10px 14px;font-weight:700;cursor:pointer}
-    .ok{background:var(--ok);color:#fff}
-    .no{background:var(--no);color:#fff}
-    .muted{color:var(--muted);font-size:12px}
-    hr{border:none;border-top:1px solid var(--line);margin:12px 0}
-    .badge{display:inline-block;font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;color:#374151;margin-left:8px}
-  
-
-.qualBox{
-  margin-top:14px;
-  border:1px solid #e5e7eb;
-  border-radius:14px;
-  padding:12px;
-  background:#fff;
-}
-.qualTitle{
-  font-weight:700;
-  margin-bottom:8px;
-}
-.qualGrid{
-  display:grid;
-  grid-template-columns: 1fr 1fr;
-  gap:6px 12px;
-  align-items:start;
-  max-height: 340px;
-  overflow:auto;
-  padding-right:4px;
-}
-.qitem{
-  display:flex;
-  gap:8px;
-  align-items:flex-start;
-  font-size:14px;
-  line-height:1.2;
-}
-.qitem input{ margin-top:2px; }
-
-</style>
+    :root { --bg:#f6f7fb; --card:#fff; --text:#111827; --muted:#6b7280; --border:#e5e7eb; --ok:#16a34a; --danger:#dc2626; }
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:0;background:var(--bg);color:var(--text);}
+    .wrap{max-width:1200px;margin:24px auto;padding:0 16px;}
+    .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+    h1{font-size:28px;margin:0;}
+    a{color:#2563eb;text-decoration:none;}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 10px rgba(0,0,0,.05);padding:16px;}
+    form{margin:0;}
+    .grid{display:grid;grid-template-columns: 420px 1fr;gap:16px;align-items:start;}
+    @media (max-width: 980px){ .grid{grid-template-columns:1fr;} }
+    .imgbox{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#fff;}
+    .imgbox img{width:100%;display:block;}
+    .imgempty{padding:32px;color:var(--muted);text-align:center;}
+    .qualbox{margin-top:12px;border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;}
+    .qualbox h3{margin:0 0 8px 0;font-size:16px;}
+    .qualhint{color:var(--muted);font-size:12px;margin:0 0 8px 0;}
+    .qualgrid{display:grid;grid-template-columns:1fr;gap:6px;max-height:360px;overflow:auto;padding-right:4px;}
+    .qitem{display:flex;gap:8px;align-items:flex-start;font-size:14px;line-height:1.2;}
+    .qitem input{margin-top:2px;}
+    .meta{display:grid;grid-template-columns:160px 1fr;gap:6px 12px;margin-bottom:10px;}
+    .meta .k{color:var(--muted);font-weight:600;}
+    .pill{display:inline-block;padding:2px 10px;border-radius:999px;border:1px solid var(--border);font-size:12px;margin-left:6px;background:#fff;}
+    .section{border-top:1px solid var(--border);padding-top:12px;margin-top:12px;}
+    .label{font-weight:700;margin:0 0 6px 0;}
+    textarea,input{width:100%;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:14px;box-sizing:border-box;}
+    textarea{min-height:120px;resize:vertical;}
+    .actions{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;}
+    .btn{border:0;border-radius:10px;padding:10px 16px;font-weight:700;color:#fff;cursor:pointer;}
+    .btn-ok{background:var(--ok);}
+    .btn-danger{background:var(--danger);}
+    .note{color:var(--muted);font-size:12px;}
+  </style>
 </head>
 <body>
   <div class="wrap">
     <div class="top">
-      <h2 style="margin:0">Confirmar caso real de Violência</h2>
+      <h1>Confirmar caso real de Violência</h1>
       <a href="{{ next_url }}">Voltar</a>
     </div>
 
     <div class="card">
-      
-      <div class="grid">
-        <div>
-          {% if ev.tem_img %}
-            <img src="{{ img_src }}" alt="Imagem do evento">
-          {% else %}
-            <div class="muted">Evento sem imagem salva.</div>
-          {% endif %}
+      <form method="post">
+        <input type="hidden" name="key" value="{{ key_value }}">
+        <input type="hidden" name="id" value="{{ ev.id }}">
+        <input type="hidden" name="next" value="{{ next_url }}">
 
-<div class="qualBox">
-  <div class="qualTitle">Qualificação do Incidente</div>
-  <div class="qualGrid">
-    {% for q in qualificacoes %}
-      <label class="qitem">
-        <input type="checkbox" name="qualificacoes" value="{{q.id}}" {% if q.id in qual_sel %}checked{% endif %}>
-        <span>{{q.nome}}</span>
-      </label>
-    {% endfor %}
-  </div>
-</div>
-
-        </div>
-        <div>
-          <div class="kv"><b>ID:</b> {{ ev.id }}</div>
-          <div class="kv"><b>Timestamp:</b> {{ ev.timestamp }}</div>
-          <div class="kv"><b>Status:</b> {{ ev.status }} {% if ev.status %}<span class="badge">{{ ev.status }}</span>{% endif %}</div>
-          <div class="kv"><b>Identificador:</b> {{ ev.identificador }}</div>
-          <div class="kv"><b>Câmera:</b> {{ ev.camera_id or '-' }}{% if ev.camera_name %} – {{ ev.camera_name }}{% endif %}</div>
-          <div class="kv"><b>Local:</b> {{ ev.local or '-' }}</div>
-          <div class="kv"><b>Objeto:</b> {{ ev.objeto or '-' }}</div>
-          <hr>
-          <div class="kv"><b>Analise objeto:</b></div>
-          <div style="white-space:pre-wrap;line-height:1.35">{{ ev.descricao_plain }}</div>
-
-          {% if ev.llava_pt %}
-            <hr>
-            <div class="kv"><b>Diagnóstico:</b></div>
-            <div style="white-space:pre-wrap;line-height:1.35">{{ ev.llava_pt }}</div>
-          {% endif %}
-
-          <hr>
-
-          <form method="post">
-            <input type="hidden" name="key" value="{{ key_value }}">
-            <input type="hidden" name="id" value="{{ ev.id }}">
-            <input type="hidden" name="next" value="{{ next_url }}">
-
-            <div class="kv"><b>Operador:</b></div>
-            <input name="operador" placeholder="ex.: op1" value="">
-
-            <div style="height:10px"></div>
-            <div class="kv"><b>Relato do operador:</b></div>
-            <textarea name="relato" placeholder="Descreva o que foi visto na imagem..."></textarea>
-
-            <div class="row">
-              <button class="btn ok" type="submit" name="action" value="confirmar">Confirmar</button>
-              <button class="btn no" type="submit" name="action" value="desconfirmar">Desfazer</button>
-              <span class="muted">O relato é obrigatório para confirmar.</span>
+        <div class="grid">
+          <div>
+            <div class="imgbox">
+              {% if img_src %}
+                <img src="{{ img_src }}" alt="Imagem do evento">
+              {% else %}
+                <div class="imgempty">Sem imagem disponível.</div>
+              {% endif %}
             </div>
-          </form>
 
-        </div>
-      </div>
-    </div>
-  </div>
-</body>
-</html>
-"Descreva o que foi visto na imagem..."></textarea>
-
-            <div class="row">
-              <button class="btn ok" type="submit" name="action" value="confirmar">Confirmar</button>
-              <button class="btn no" type="submit" name="action" value="desconfirmar">Desfazer</button>
-              <span class="muted">O relato é obrigatório para confirmar.</span>
+            <div class="qualbox">
+              <h3>Qualificação do incidente</h3>
+              <p class="qualhint">Selecione uma ou mais opções (opcional).</p>
+              <div class="qualgrid">
+                {% for q in qualificacoes %}
+                  <label class="qitem">
+                    <input type="checkbox" name="qualificacoes" value="{{ q['id'] }}"
+                      {% if q['id'] in qual_sel %}checked{% endif %}>
+                    <span>{{ q['nome'] }}</span>
+                  </label>
+                {% endfor %}
+              </div>
             </div>
-          </form>
+          </div>
 
+          <div>
+            <div class="meta">
+              <div class="k">ID:</div><div>{{ ev.id }}</div>
+              <div class="k">Timestamp:</div><div>{{ ev.timestamp }}</div>
+              <div class="k">Status:</div><div>{{ ev.status }} <span class="pill">{{ ev.status }}</span></div>
+              <div class="k">Identificador:</div><div>{{ ev.identificador }}</div>
+              <div class="k">Câmera:</div><div>{{ ev.camera_name }}</div>
+              <div class="k">Local:</div><div>{{ ev.local }}</div>
+              <div class="k">Objeto:</div><div>{{ ev.objeto }}</div>
+            </div>
+
+            <div class="section">
+              <p class="label">Análise objeto:</p>
+              <div>{{ ev.yolo }}</div>
+            </div>
+
+            <div class="section">
+              <p class="label">Diagnóstico:</p>
+              <div style="white-space:pre-wrap">{{ ev.llava_pt }}</div>
+            </div>
+
+            <div class="section">
+              <p class="label">Operador:</p>
+              <input name="operador" value="{{ ev.confirmado_por or '' }}" placeholder="ex.: op1" />
+            </div>
+
+            <div class="section">
+              <p class="label">Relato do operador:</p>
+              <textarea name="relato" placeholder="Descreva o que foi visto na imagem...">{{ ev.relato_operador or '' }}</textarea>
+            </div>
+
+            <div class="actions">
+              <button class="btn btn-ok" name="action" value="confirmar" type="submit">Confirmar</button>
+              <button class="btn btn-danger" name="action" value="desconfirmar" type="submit">Desfazer</button>
+              <span class="note">O relato é obrigatório para confirmar.</span>
+            </div>
+          </div>
         </div>
-      </div>
+      </form>
     </div>
   </div>
 </body>
