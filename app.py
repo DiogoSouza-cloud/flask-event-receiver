@@ -849,9 +849,43 @@ CONFIRM_UI_TEMPLATE = """
     .qualbox{margin-top:12px;border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;}
     .qualbox h3{margin:0 0 8px 0;font-size:16px;}
     .qualhint{color:var(--muted);font-size:12px;margin:0 0 8px 0;}
-    .qualgrid{display:grid;grid-template-columns:1fr;gap:6px;max-height:360px;overflow:auto;padding-right:4px;}
-    .qitem{display:flex;gap:8px;align-items:flex-start;font-size:14px;line-height:1.2;}
-    .qitem input{margin-top:2px;}
+    /* ===== Qualificação (layout melhorado) ===== */
+    .qualGrid{
+      display:grid;
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+      gap:10px;
+      max-height:280px;
+      overflow:auto;
+      padding-right:6px;
+    }
+    
+    .qitem{
+      display:grid;
+      grid-template-columns:20px 1fr;   /* coluna do checkbox + coluna do texto */
+      align-items:start;
+      column-gap:10px;
+      padding:8px 10px;
+      border:1px solid #e5e7eb;
+      border-radius:10px;
+      background:#fff;
+    }
+    
+    .qitem input{
+      margin-top:3px;
+    }
+    
+    .qitem span{
+      display:block;
+      text-align:left;
+      line-height:1.2;
+      word-break:break-word;
+    }
+    
+    /* Responsivo: em telas estreitas, 1 coluna */
+    @media (max-width: 860px){
+      .qualGrid{grid-template-columns:1fr;}
+    }
+
     .meta{display:grid;grid-template-columns:160px 1fr;gap:6px 12px;margin-bottom:10px;}
     .meta .k{color:var(--muted);font-weight:600;}
     .pill{display:inline-block;padding:2px 10px;border-radius:999px;border:1px solid var(--border);font-size:12px;margin-left:6px;background:#fff;}
