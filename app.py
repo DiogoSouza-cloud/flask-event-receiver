@@ -922,24 +922,24 @@ def receber_evento():
         row = _row_by_keys(conn)
 
         if row:
-            # UPDATE dos campos variáveis + timestamp
+            # UPDATE seguro: NÃO sobrescreve campos com string vazia.
+            # Isso evita "apagar" sha256, llava_pt, img_url, imagem, etc., quando chegam eventos parciais.
+            params = {k: ("" if v is None else v) for k, v in base_row.items() if k != "timestamp"}
+            params["id"] = int(row[0])
+            params["ts"] = _now_str()
+
             set_parts = []
-            params = {}
-            for k, v in base_row.items():
-                if k in ("timestamp",):
+            for k in base_row.keys():
+                if k == "timestamp":
                     continue
-                # Não sobrescrever valores já persistidos com vazio (ex.: sha256, camera_name, local).
-                if v is None or v == "":
-                    continue
-                set_parts.append(f"{k}=:{k}")
-                params[k] = v
-            params["id"] = row[0]
+                # mantém o valor existente se o payload vier vazio
+                set_parts.append(f"{k}=COALESCE(NULLIF(:{k},''), {k})")
 
             conn.execute(
                 text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
-                dict(params, ts=_now_str())
+                params
             )
-            ev_id = row[0]
+            ev_id = int(row[0])
         else:
             r = conn.execute(eventos_tb.insert().values(**base_row))
             try:
