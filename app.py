@@ -90,6 +90,11 @@ eventos_tb = Table(
     Column("tratamento_status", Text),
     Column("tratamento_resumo", Text),
     Column("tratamento_em", Text),
+
+    # Dados suplementares (estatística)
+    Column("vitimas_aparentes", Text),
+    Column("criancas_ou_idosos", Text),
+    Column("em_andamento", Text),
 )
 
 # =========================
@@ -473,6 +478,10 @@ def _ensure_columns():
             if "tratamento_status" not in names: add("tratamento_status")
             if "tratamento_resumo" not in names: add("tratamento_resumo")
             if "tratamento_em"     not in names: add("tratamento_em")
+            # Dados suplementares
+            if "vitimas_aparentes"  not in names: add("vitimas_aparentes")
+            if "criancas_ou_idosos" not in names: add("criancas_ou_idosos")
+            if "em_andamento"       not in names: add("em_andamento")
     else:
         stmts = [
             # existentes
@@ -501,6 +510,11 @@ def _ensure_columns():
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS tratamento_status TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS tratamento_resumo TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS tratamento_em TEXT",
+
+            # Dados suplementares
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS vitimas_aparentes TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS criancas_ou_idosos TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS em_andamento TEXT",
         ]
         with engine.begin() as conn:
             for s in stmts:
@@ -1232,6 +1246,14 @@ CONFIRM_UI_TEMPLATE = """
     .btn-ok{background:var(--ok);}
     .btn-danger{background:var(--danger);}
     .note{color:var(--muted);font-size:12px;}
+    /* Dados suplementares (lado do Operador) */
+    .opgrid{display:grid;grid-template-columns:260px 1fr;gap:12px;align-items:start;}
+    @media (max-width: 980px){ .opgrid{grid-template-columns:1fr;} }
+    .suppBox{border:1px solid var(--border);border-radius:12px;padding:10px;background:#fff;}
+    .suppBox h4{margin:0 0 8px 0;font-size:14px;}
+    .suppItem{display:flex;gap:10px;align-items:flex-start;margin:8px 0;}
+    .suppItem input{margin-top:3px;}
+    .suppItem span{line-height:1.2;}
   </style>
 </head>
 <body>
@@ -1294,8 +1316,29 @@ CONFIRM_UI_TEMPLATE = """
             </div>
 
             <div class="section">
-              <p class="label">Operador:</p>
-              <input name="operador" value="{{ ev.confirmado_por or '' }}" placeholder="ex.: op1" />
+              <div class="opgrid">
+                <div>
+                  <p class="label">Operador:</p>
+                  <input name="operador" value="{{ ev.confirmado_por or '' }}" placeholder="ex.: op1" />
+                </div>
+                <div>
+                  <div class="suppBox">
+                    <h4>Dados Suplementares</h4>
+                    <label class="suppItem">
+                      <input type="checkbox" name="sup_vitimas" value="SIM" {% if ev.vitimas_aparentes == 'SIM' %}checked{% endif %}>
+                      <span>Presença de vítimas aparentes</span>
+                    </label>
+                    <label class="suppItem">
+                      <input type="checkbox" name="sup_criancas_idosos" value="SIM" {% if ev.criancas_ou_idosos == 'SIM' %}checked{% endif %}>
+                      <span>Envolvimento de crianças ou idosos</span>
+                    </label>
+                    <label class="suppItem">
+                      <input type="checkbox" name="sup_em_andamento" value="SIM" {% if ev.em_andamento == 'SIM' %}checked{% endif %}>
+                      <span>Em andamento</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div class="section">
@@ -1333,7 +1376,13 @@ def _load_event_by_id(ev_id: int):
                    END AS tem_img,
                    COALESCE(img_url,'') AS img_url,
                    COALESCE(camera_id,''), COALESCE(camera_name,''), COALESCE(local,''),
-                   COALESCE(llava_pt,'')
+                   COALESCE(llava_pt,''),
+                   COALESCE(relato_operador,'') AS relato_operador,
+                   COALESCE(confirmado_por,'') AS confirmado_por,
+                   COALESCE(confirmado_em,'') AS confirmado_em,
+                   COALESCE(vitimas_aparentes,'') AS vitimas_aparentes,
+                   COALESCE(criancas_ou_idosos,'') AS criancas_ou_idosos,
+                   COALESCE(em_andamento,'') AS em_andamento
             FROM eventos
             WHERE id=:id
         """), {"id": ev_id}).first()
@@ -1356,6 +1405,12 @@ def _load_event_by_id(ev_id: int):
         "camera_name": r[9] or "",
         "local": r[10] or "",
         "llava_pt": r[11] or "",
+        "relato_operador": r[12] or "",
+        "confirmado_por": r[13] or "",
+        "confirmado_em": r[14] or "",
+        "vitimas_aparentes": r[15] or "",
+        "criancas_ou_idosos": r[16] or "",
+        "em_andamento": r[17] or "",
     }
 
 
@@ -1647,6 +1702,11 @@ def confirmar_ui():
         relato = _trim(request.form.get("relato"))
         operador = _trim(request.form.get("operador"))
 
+        # Dados suplementares (estatística)
+        sup_vitimas = "SIM" if request.form.get("sup_vitimas") else ""
+        sup_criancas_idosos = "SIM" if request.form.get("sup_criancas_idosos") else ""
+        sup_em_andamento = "SIM" if request.form.get("sup_em_andamento") else ""
+
         # Qualificações selecionadas (multi-select)
         qual_ids = []
         for _v in request.form.getlist("qualificacoes"):
@@ -1693,6 +1753,9 @@ def confirmar_ui():
                            relato_operador='',
                            confirmado_por='',
                            confirmado_em='',
+                           vitimas_aparentes='',
+                           criancas_ou_idosos='',
+                           em_andamento='',
                            tratamento_status='',
                            tratamento_resumo='',
                            tratamento_em=''
@@ -1721,6 +1784,9 @@ def confirmar_ui():
                            relato_operador=:r,
                            confirmado_por=:p,
                            confirmado_em=:em,
+                           vitimas_aparentes=:v1,
+                           criancas_ou_idosos=:v2,
+                           em_andamento=:v3,
                            tratamento_status = 'PENDENTE',
                            tratamento_em = COALESCE(NULLIF(tratamento_em,''), :em),
                            sha256 = COALESCE(NULLIF(sha256,''), NULLIF(:sha,''))
@@ -1730,6 +1796,9 @@ def confirmar_ui():
                     "r": relato,
                     "p": operador,
                     "em": _now_str(),
+                    "v1": sup_vitimas,
+                    "v2": sup_criancas_idosos,
+                    "v3": sup_em_andamento,
                     "sha": sha_calc,
                     "id": ev_id
                 })
@@ -1854,6 +1923,11 @@ def api_confirmar():
     ev_id = int(dados.get("id") or 0)
     relato = _trim(dados.get("relato") or dados.get("relato_operador"))
     operador = _trim(dados.get("operador") or dados.get("confirmado_por"))
+
+    # Dados suplementares (opcional)
+    sup_vitimas = "SIM" if str(dados.get("vitimas_aparentes") or "").upper() == "SIM" else ""
+    sup_criancas_idosos = "SIM" if str(dados.get("criancas_ou_idosos") or "").upper() == "SIM" else ""
+    sup_em_andamento = "SIM" if str(dados.get("em_andamento") or "").upper() == "SIM" else ""
     confirmado = _trim(dados.get("confirmado") or CONFIRM_VALUE) or CONFIRM_VALUE
 
     if ev_id <= 0 or not relato:
@@ -1905,6 +1979,9 @@ def api_confirmar():
                        relato_operador=:r,
                        confirmado_por=:p,
                        confirmado_em=:em,
+                       vitimas_aparentes=:v1,
+                       criancas_ou_idosos=:v2,
+                       em_andamento=:v3,
                        tratamento_status = 'PENDENTE',
                        tratamento_em = COALESCE(NULLIF(tratamento_em,''), :em),
                        sha256 = COALESCE(NULLIF(sha256,''), NULLIF(:sha,''))
@@ -1915,6 +1992,9 @@ def api_confirmar():
                 "r": relato,
                 "p": operador,
                 "em": _now_str(),
+                "v1": sup_vitimas,
+                "v2": sup_criancas_idosos,
+                "v3": sup_em_andamento,
                 "sha": sha_calc,
                 "id": ev_id
             }
@@ -1939,6 +2019,9 @@ def api_desconfirmar():
                        relato_operador='',
                        confirmado_por='',
                        confirmado_em='',
+                       vitimas_aparentes='',
+                       criancas_ou_idosos='',
+                       em_andamento='',
                        tratamento_status='',
                        tratamento_resumo='',
                        tratamento_em=''
@@ -2312,6 +2395,7 @@ def api_events():
            COALESCE(model_yolo,''), COALESCE(classes,''), COALESCE(yolo_conf,''), COALESCE(yolo_imgsz,''),
            COALESCE(llava_pt,''),
            COALESCE(confirmado,''), COALESCE(relato_operador,''), COALESCE(confirmado_por,''), COALESCE(confirmado_em,''),
+           COALESCE(vitimas_aparentes,''), COALESCE(criancas_ou_idosos,''), COALESCE(em_andamento,''),
            COALESCE(tratamento_status,''), COALESCE(tratamento_resumo,''), COALESCE(tratamento_em,''),
            CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS has_img
       FROM eventos
@@ -2347,11 +2431,14 @@ def api_events():
             "relato_operador": r[17] or "",
             "confirmado_por": r[18] or "",
             "confirmado_em": r[19] or "",
-            "tratamento_status": r[20] or "",
-            "tratamento_resumo": r[21] or "",
-            "tratamento_em": r[22] or "",
-            "has_img": bool(r[23]),
-            "image_url": url_for("img", ev_id=r[0], _external=True) if r[23] else ""
+            "vitimas_aparentes": r[20] or "",
+            "criancas_ou_idosos": r[21] or "",
+            "em_andamento": r[22] or "",
+            "tratamento_status": r[23] or "",
+            "tratamento_resumo": r[24] or "",
+            "tratamento_em": r[25] or "",
+            "has_img": bool(r[26]),
+            "image_url": url_for("img", ev_id=r[0], _external=True) if r[26] else ""
         })
     return jsonify(out)
 
