@@ -255,7 +255,15 @@ TRATAMENTO_MATRIZ = {
 
 
 def _ensure_tratamento_tables_and_seed(conn):
-    """Cria (se necessário) as tabelas de tratamento e popula a matriz fixa."""
+    """Cria (se necessário) as tabelas de tratamento e popula a matriz fixa.
+
+    Importante:
+    - Para permitir edição manual via UI (renomear gravidades/protocolos/meios/órgãos),
+      o seed NÃO deve reintroduzir automaticamente textos antigos após você editar.
+    - Portanto, o seed da matriz TRATAMENTO_MATRIZ só roda se as tabelas alvo ainda estiverem vazias.
+    """
+
+    # --- DDL (sempre) ---
     conn.execute(text("""
         CREATE TABLE IF NOT EXISTS gravidade (
             id SERIAL PRIMARY KEY,
@@ -303,6 +311,21 @@ def _ensure_tratamento_tables_and_seed(conn):
         );
     """))
 
+    # --- Seed (somente se tabelas ainda estão vazias) ---
+    try:
+        has_any = (
+            int(conn.execute(text("SELECT COUNT(*) FROM gravidade")).scalar() or 0) > 0 or
+            int(conn.execute(text("SELECT COUNT(*) FROM protocolo_tratamento")).scalar() or 0) > 0 or
+            int(conn.execute(text("SELECT COUNT(*) FROM meio_acionamento")).scalar() or 0) > 0 or
+            int(conn.execute(text("SELECT COUNT(*) FROM orgao_acionado")).scalar() or 0) > 0
+        )
+    except Exception:
+        has_any = False
+
+    # Se já há dados (provavelmente editados), não re-semeia
+    if has_any:
+        return
+
     gravidades = {v["gravidade"] for v in TRATAMENTO_MATRIZ.values()}
     meios = {v["meio"] for v in TRATAMENTO_MATRIZ.values()}
     orgaos = {v["orgao"] for v in TRATAMENTO_MATRIZ.values()}
@@ -317,24 +340,31 @@ def _ensure_tratamento_tables_and_seed(conn):
     for p in sorted(protocolos):
         conn.execute(text("INSERT INTO protocolo_tratamento (descricao) VALUES (:d) ON CONFLICT (descricao) DO NOTHING"), {"d": p})
 
-    for qual_nome, meta in TRATAMENTO_MATRIZ.items():
-        conn.execute(text("""
-            INSERT INTO qualificacao_tratamento (qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id)
-            SELECT qi.id, g.id, p.id, m.id, o.id
-              FROM qualificacao_incidente qi
-              JOIN gravidade g ON g.nome = :grav
-              JOIN protocolo_tratamento p ON p.descricao = :prot
-              JOIN meio_acionamento m ON m.nome = :meio
-              JOIN orgao_acionado o ON o.nome = :org
-             WHERE qi.nome = :qual
-            ON CONFLICT (qualificacao_id) DO NOTHING
-        """), {
-            "qual": qual_nome,
-            "grav": meta["gravidade"],
-            "prot": meta["protocolo"],
-            "meio": meta["meio"],
-            "org": meta["orgao"],
-        })
+    # Popula a matriz qualificacao_tratamento somente se estiver vazia
+    try:
+        qt_count = int(conn.execute(text("SELECT COUNT(*) FROM qualificacao_tratamento")).scalar() or 0)
+    except Exception:
+        qt_count = 0
+
+    if qt_count <= 0:
+        for qual_nome, meta in TRATAMENTO_MATRIZ.items():
+            conn.execute(text("""
+                INSERT INTO qualificacao_tratamento (qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id)
+                SELECT qi.id, g.id, p.id, m.id, o.id
+                  FROM qualificacao_incidente qi
+                  JOIN gravidade g ON g.nome = :grav
+                  JOIN protocolo_tratamento p ON p.descricao = :prot
+                  JOIN meio_acionamento m ON m.nome = :meio
+                  JOIN orgao_acionado o ON o.nome = :org
+                 WHERE qi.nome = :qual
+                ON CONFLICT (qualificacao_id) DO NOTHING
+            """), {
+                "qual": qual_nome,
+                "grav": meta["gravidade"],
+                "prot": meta["protocolo"],
+                "meio": meta["meio"],
+                "org": meta["orgao"],
+            })
 
 
 def _salvar_tratamento_evento(conn, ev_id: int, qual_ids):
@@ -865,7 +895,7 @@ def index():
     return (
         "Online. "
         "POST /evento | POST /resposta_ia | "
-        "GET /historico | GET /alertas | GET /indicios | GET /confirmados | "
+        "GET /historico | GET /indicios | GET /confirmados | GET /tratamentos | "
         "POST /api/confirmar?key=... | POST /api/desconfirmar?key=... | "
         "GET /api/events | GET /api/stats | GET /admin/reset?key=..."
     )
@@ -1918,6 +1948,258 @@ def api_desconfirmar():
         )
     return jsonify({"ok": True})
 
+
+# -------------------- UI: editar textos de tratamento (lookup) --------------------
+TRATAMENTO_EDIT_TEMPLATE = """
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Editar textos de Tratamento</title>
+  <style>
+    :root { --bg:#f6f7fb; --card:#fff; --text:#111827; --muted:#6b7280; --border:#e5e7eb; --brand:#111827; }
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;margin:0;background:var(--bg);color:var(--text);}
+    .wrap{max-width:1100px;margin:22px auto;padding:0 16px;}
+    .top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;}
+    h1{font-size:22px;margin:0;color:var(--brand);}
+    a{color:#2563eb;text-decoration:none;}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 10px rgba(0,0,0,.05);padding:14px;margin:14px 0;}
+    .hint{color:var(--muted);font-size:12px;margin:6px 0 0 0;}
+    table{width:100%;border-collapse:collapse;}
+    th,td{border-bottom:1px solid var(--border);padding:10px 8px;text-align:left;vertical-align:top;}
+    th{font-size:12px;color:var(--muted);font-weight:700;}
+    input[type="text"]{width:100%;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:14px;box-sizing:border-box;}
+    .row-add{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+    .btn{border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer;}
+    .btn-save{background:#111827;color:#fff;}
+    .btn-add{background:#2563eb;color:#fff;}
+    .ok{background:#dcfce7;border:1px solid #bbf7d0;color:#166534;padding:10px 12px;border-radius:12px;margin:12px 0;}
+    .err{background:#fee2e2;border:1px solid #fecaca;color:#991b1b;padding:10px 12px;border-radius:12px;margin:12px 0;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1>Editar textos de tratamento (lookup)</h1>
+      <a href="{{ back_url }}">Voltar</a>
+    </div>
+
+    {% if ok %}
+      <div class="ok">Atualizado com sucesso.</div>
+    {% endif %}
+    {% if err %}
+      <div class="err">{{ err }}</div>
+    {% endif %}
+
+    <form method="post">
+      <input type="hidden" name="key" value="{{ key_value }}">
+
+      <div class="card">
+        <h2 style="margin:0 0 6px 0;font-size:16px;">Gravidade</h2>
+        <p class="hint">Edite os textos e clique em “Salvar tudo”.</p>
+        <table>
+          <thead><tr><th style="width:70px;">ID</th><th>Texto</th></tr></thead>
+          <tbody>
+          {% for r in gravidades %}
+            <tr>
+              <td>{{ r.id }}</td>
+              <td><input type="text" name="g_{{ r.id }}" value="{{ r.nome }}"></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <div class="row-add">
+          <input type="text" name="add_gravidade" placeholder="Adicionar nova gravidade...">
+          <button class="btn btn-add" name="action" value="add_gravidade" type="submit">Adicionar</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 6px 0;font-size:16px;">Protocolo de Tratamento</h2>
+        <p class="hint">Edite o texto do protocolo. (Pode ser longo.)</p>
+        <table>
+          <thead><tr><th style="width:70px;">ID</th><th>Texto</th></tr></thead>
+          <tbody>
+          {% for r in protocolos %}
+            <tr>
+              <td>{{ r.id }}</td>
+              <td><input type="text" name="p_{{ r.id }}" value="{{ r.descricao }}"></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <div class="row-add">
+          <input type="text" name="add_protocolo" placeholder="Adicionar novo protocolo...">
+          <button class="btn btn-add" name="action" value="add_protocolo" type="submit">Adicionar</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 6px 0;font-size:16px;">Meio de Acionamento</h2>
+        <table>
+          <thead><tr><th style="width:70px;">ID</th><th>Texto</th></tr></thead>
+          <tbody>
+          {% for r in meios %}
+            <tr>
+              <td>{{ r.id }}</td>
+              <td><input type="text" name="m_{{ r.id }}" value="{{ r.nome }}"></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <div class="row-add">
+          <input type="text" name="add_meio" placeholder="Adicionar novo meio...">
+          <button class="btn btn-add" name="action" value="add_meio" type="submit">Adicionar</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 6px 0;font-size:16px;">Órgão Acionado</h2>
+        <table>
+          <thead><tr><th style="width:70px;">ID</th><th>Texto</th></tr></thead>
+          <tbody>
+          {% for r in orgaos %}
+            <tr>
+              <td>{{ r.id }}</td>
+              <td><input type="text" name="o_{{ r.id }}" value="{{ r.nome }}"></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <div class="row-add">
+          <input type="text" name="add_orgao" placeholder="Adicionar novo órgão...">
+          <button class="btn btn-add" name="action" value="add_orgao" type="submit">Adicionar</button>
+        </div>
+      </div>
+
+      <div class="card" style="display:flex;justify-content:flex-end;">
+        <button class="btn btn-save" name="action" value="save_all" type="submit">Salvar tudo</button>
+      </div>
+    </form>
+  </div>
+</body>
+</html>
+"""
+_TRAT_EDIT_TEMPLATE = app.jinja_env.from_string(TRATAMENTO_EDIT_TEMPLATE)
+
+def _render_trat_edit(**ctx):
+    return _TRAT_EDIT_TEMPLATE.render(**ctx)
+
+def _listar_lookup(table: str, col: str):
+    with engine.begin() as conn:
+        rows = conn.execute(text(f"SELECT id, {col} FROM {table} ORDER BY id")).fetchall()
+    out = []
+    for r in rows:
+        if col == "descricao":
+            out.append({"id": int(r[0]), "descricao": r[1] or ""})
+        else:
+            out.append({"id": int(r[0]), "nome": r[1] or ""})
+    return out
+
+@app.route("/tratamentos", methods=["GET", "POST"])
+def tratamentos_ui():
+    if not _admin_ok():
+        abort(403)
+
+    key_value = (request.values.get("key") or "").strip()
+    back_url = (request.values.get("next") or "/").strip()
+    ok = (request.args.get("ok") or "").strip() == "1"
+    err = ""
+
+    def _safe_update(conn, sql_txt: str, params: dict):
+        nonlocal err
+        try:
+            conn.execute(text(sql_txt), params)
+        except Exception as e:
+            # mantém o app vivo e mostra mensagem no UI
+            err = str(e)[:500]
+
+    if request.method == "POST":
+        action = (request.form.get("action") or "save_all").strip()
+
+        with engine.begin() as conn:
+            # Atualizações (renomear)
+            for k, v in request.form.items():
+                if k.startswith("g_"):
+                    try:
+                        _id = int(k[2:])
+                        _val = _trim(v)
+                        if _val:
+                            _safe_update(conn, "UPDATE gravidade SET nome=:v WHERE id=:id", {"v": _val, "id": _id})
+                    except Exception:
+                        pass
+                elif k.startswith("p_"):
+                    try:
+                        _id = int(k[2:])
+                        _val = _trim(v)
+                        if _val:
+                            _safe_update(conn, "UPDATE protocolo_tratamento SET descricao=:v WHERE id=:id", {"v": _val, "id": _id})
+                    except Exception:
+                        pass
+                elif k.startswith("m_"):
+                    try:
+                        _id = int(k[2:])
+                        _val = _trim(v)
+                        if _val:
+                            _safe_update(conn, "UPDATE meio_acionamento SET nome=:v WHERE id=:id", {"v": _val, "id": _id})
+                    except Exception:
+                        pass
+                elif k.startswith("o_"):
+                    try:
+                        _id = int(k[2:])
+                        _val = _trim(v)
+                        if _val:
+                            _safe_update(conn, "UPDATE orgao_acionado SET nome=:v WHERE id=:id", {"v": _val, "id": _id})
+                    except Exception:
+                        pass
+
+            # Inserções (novos itens)
+            if action == "add_gravidade":
+                nv = _trim(request.form.get("add_gravidade"))
+                if nv:
+                    _safe_update(conn, "INSERT INTO gravidade (nome) VALUES (:v) ON CONFLICT (nome) DO NOTHING", {"v": nv})
+            elif action == "add_protocolo":
+                nv = _trim(request.form.get("add_protocolo"))
+                if nv:
+                    _safe_update(conn, "INSERT INTO protocolo_tratamento (descricao) VALUES (:v) ON CONFLICT (descricao) DO NOTHING", {"v": nv})
+            elif action == "add_meio":
+                nv = _trim(request.form.get("add_meio"))
+                if nv:
+                    _safe_update(conn, "INSERT INTO meio_acionamento (nome) VALUES (:v) ON CONFLICT (nome) DO NOTHING", {"v": nv})
+            elif action == "add_orgao":
+                nv = _trim(request.form.get("add_orgao"))
+                if nv:
+                    _safe_update(conn, "INSERT INTO orgao_acionado (nome) VALUES (:v) ON CONFLICT (nome) DO NOTHING", {"v": nv})
+
+        # Redirect (evita re-POST)
+        if err:
+            return _render_trat_edit(
+                key_value=key_value,
+                back_url=back_url,
+                ok=False,
+                err=err,
+                gravidades=_listar_lookup("gravidade", "nome"),
+                protocolos=_listar_lookup("protocolo_tratamento", "descricao"),
+                meios=_listar_lookup("meio_acionamento", "nome"),
+                orgaos=_listar_lookup("orgao_acionado", "nome"),
+            )
+
+        return redirect(url_for("tratamentos_ui", key=key_value, next=back_url, ok="1"))
+
+    # GET
+    return _render_trat_edit(
+        key_value=key_value,
+        back_url=back_url,
+        ok=ok,
+        err=err,
+        gravidades=_listar_lookup("gravidade", "nome"),
+        protocolos=_listar_lookup("protocolo_tratamento", "descricao"),
+        meios=_listar_lookup("meio_acionamento", "nome"),
+        orgaos=_listar_lookup("orgao_acionado", "nome"),
+    )
+
+
 # -------------------- Painéis Flask (BD) --------------------
 @app.route("/historico")
 def historico():
@@ -1930,44 +2212,6 @@ def historico():
         page_title="Painel Histórico",
         eventos=evs,
         filtro=filtro,
-        data=data,
-        page=page,
-        logo_url=_logo_url(),
-        iaprotect_url=_iaprotect_url()
-    )
-
-@app.route("/alertas")
-def alertas():
-    raw = (request.args.get("filtro") or "Perigo Sim").strip()
-    data = (request.args.get("data") or "").strip()
-    page = max(int(request.args.get("page") or 1), 1)
-
-    evs = buscar_eventos(
-        filtro=raw,
-        data=data if data else None,
-        status=None,
-        confirmado=None,
-        limit=50,
-        offset=(page-1)*50
-    )
-
-    limiar = datetime.now() - timedelta(minutes=60)
-    recentes = []
-    for e in evs:
-        ts = e.get("timestamp")
-        if not ts:
-            continue
-        try:
-            dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-            if dt >= limiar:
-                recentes.append(e)
-        except ValueError:
-            continue
-
-    return _render_main(
-        page_title="Painel de Alertas",
-        eventos=recentes,
-        filtro=raw,
         data=data,
         page=page,
         logo_url=_logo_url(),
