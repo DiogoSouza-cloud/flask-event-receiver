@@ -86,6 +86,10 @@ eventos_tb = Table(
     Column("relato_operador", Text),
     Column("confirmado_por", Text),
     Column("confirmado_em", Text),
+    # flatten p/ Grafana (opcional)
+    Column("tratamento_status", Text),
+    Column("tratamento_resumo", Text),
+    Column("tratamento_em", Text),
 )
 
 # =========================
@@ -125,6 +129,8 @@ def _seed_qualificacoes():
     with engine.begin() as conn:
         # cria tabelas (caso ainda não existam)
         md.create_all(engine)
+        # cria/popula matriz de tratamento (tabelas + mapeamento fixo)
+        _ensure_tratamento_tables_and_seed(conn)
 
         # busca existentes
         existentes = {
@@ -168,6 +174,241 @@ def _salvar_qualificacoes_evento(conn, evento_id: int, qual_ids):
         )
 
 
+
+# =========================
+# Matriz de tratamento (Qualificação -> Gravidade/Protocolo/Meio/Órgão)
+# =========================
+TRATAMENTO_MATRIZ = {
+    "Tentativa de acesso não autorizado": {
+        "gravidade": "Média",
+        "protocolo": "Monitorar, registrar evidências, verificar recorrência, acionar se persistente",
+        "meio": "Telefone 21 99999-9999",
+        "orgao": "Vigilância Privada",
+    },
+    "Furto": {
+        "gravidade": "Média",
+        "protocolo": "Confirmar ocorrência, registrar imagens, acionar patrulha",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    "Dano ao patrimônio público ou privado": {
+        "gravidade": "Baixa",
+        "protocolo": "Registrar, avaliar extensão do dano, acionar a Guarda Municipal",
+        "meio": "Automático Sistema",
+        "orgao": "Guarda Municipal",
+    },
+    "Roubo": {
+        "gravidade": "Alta",
+        "protocolo": "Acionamento imediato, preservação de imagens, acompanhamento em tempo real",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    "Ostentação de arma de fogo": {
+        "gravidade": "Crítica",
+        "protocolo": "Alerta imediato, monitoramento contínuo, despacho emergencial",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    "Porte de arma oculta": {
+        "gravidade": "Alta",
+        "protocolo": "Monitoramento discreto, alerta preventivo, registro para inteligência",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    "Acidente em via pública": {
+        "gravidade": "Média",
+        "protocolo": "Avaliar vítimas, acionar emergência conforme gravidade",
+        "meio": "Automático Sistema",
+        "orgao": "Guarda Municipal",
+    },
+    "Agressão física sem arma": {
+        "gravidade": "Alta",
+        "protocolo": "Acionamento imediato, monitoramento do conflito",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    "Ataque com arma branca": {
+        "gravidade": "Crítica",
+        "protocolo": "Alerta máximo, despacho urgente, preservação de provas",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    "Ataque com arma de fogo": {
+        "gravidade": "Crítica",
+        "protocolo": "Protocolo de emergência máxima, múltiplos acionamentos",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    "Violência sexual": {
+        "gravidade": "Crítica",
+        "protocolo": "Acionamento imediato, preservação rigorosa de imagens",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    "Conflito generalizado": {
+        "gravidade": "Alta",
+        "protocolo": "Monitoramento ampliado, acionamento preventivo ou repressivo",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+}
+
+
+def _ensure_tratamento_tables_and_seed(conn):
+    """Cria (se necessário) as tabelas de tratamento e popula a matriz fixa."""
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS gravidade (
+            id SERIAL PRIMARY KEY,
+            nome TEXT UNIQUE NOT NULL
+        );
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS protocolo_tratamento (
+            id SERIAL PRIMARY KEY,
+            descricao TEXT UNIQUE NOT NULL
+        );
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS meio_acionamento (
+            id SERIAL PRIMARY KEY,
+            nome TEXT UNIQUE NOT NULL
+        );
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS orgao_acionado (
+            id SERIAL PRIMARY KEY,
+            nome TEXT UNIQUE NOT NULL
+        );
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS qualificacao_tratamento (
+            qualificacao_id INTEGER PRIMARY KEY
+                REFERENCES qualificacao_incidente(id) ON DELETE CASCADE,
+            gravidade_id INTEGER NOT NULL REFERENCES gravidade(id),
+            protocolo_id INTEGER NOT NULL REFERENCES protocolo_tratamento(id),
+            meio_id INTEGER NOT NULL REFERENCES meio_acionamento(id),
+            orgao_id INTEGER NOT NULL REFERENCES orgao_acionado(id)
+        );
+    """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS evento_tratamento (
+            evento_id INTEGER NOT NULL REFERENCES eventos(id) ON DELETE CASCADE,
+            qualificacao_id INTEGER NOT NULL REFERENCES qualificacao_incidente(id) ON DELETE CASCADE,
+            gravidade_id INTEGER NOT NULL REFERENCES gravidade(id),
+            protocolo_id INTEGER NOT NULL REFERENCES protocolo_tratamento(id),
+            meio_id INTEGER NOT NULL REFERENCES meio_acionamento(id),
+            orgao_id INTEGER NOT NULL REFERENCES orgao_acionado(id),
+            created_at TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (evento_id, qualificacao_id)
+        );
+    """))
+
+    gravidades = {v["gravidade"] for v in TRATAMENTO_MATRIZ.values()}
+    meios = {v["meio"] for v in TRATAMENTO_MATRIZ.values()}
+    orgaos = {v["orgao"] for v in TRATAMENTO_MATRIZ.values()}
+    protocolos = {v["protocolo"] for v in TRATAMENTO_MATRIZ.values()}
+
+    for g in sorted(gravidades):
+        conn.execute(text("INSERT INTO gravidade (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING"), {"n": g})
+    for m in sorted(meios):
+        conn.execute(text("INSERT INTO meio_acionamento (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING"), {"n": m})
+    for o in sorted(orgaos):
+        conn.execute(text("INSERT INTO orgao_acionado (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING"), {"n": o})
+    for p in sorted(protocolos):
+        conn.execute(text("INSERT INTO protocolo_tratamento (descricao) VALUES (:d) ON CONFLICT (descricao) DO NOTHING"), {"d": p})
+
+    for qual_nome, meta in TRATAMENTO_MATRIZ.items():
+        conn.execute(text("""
+            INSERT INTO qualificacao_tratamento (qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id)
+            SELECT qi.id, g.id, p.id, m.id, o.id
+              FROM qualificacao_incidente qi
+              JOIN gravidade g ON g.nome = :grav
+              JOIN protocolo_tratamento p ON p.descricao = :prot
+              JOIN meio_acionamento m ON m.nome = :meio
+              JOIN orgao_acionado o ON o.nome = :org
+             WHERE qi.nome = :qual
+            ON CONFLICT (qualificacao_id) DO NOTHING
+        """), {
+            "qual": qual_nome,
+            "grav": meta["gravidade"],
+            "prot": meta["protocolo"],
+            "meio": meta["meio"],
+            "org": meta["orgao"],
+        })
+
+
+def _salvar_tratamento_evento(conn, ev_id: int, qual_ids):
+    """Aplica a matriz para o evento, gerando linhas em evento_tratamento."""
+    qual_ids = [int(q) for q in (qual_ids or []) if str(q).strip().isdigit()]
+    conn.execute(text("DELETE FROM evento_tratamento WHERE evento_id=:id"), {"id": ev_id})
+    if not qual_ids:
+        return
+
+    for qid in dict.fromkeys(qual_ids):
+        conn.execute(text("""
+            INSERT INTO evento_tratamento (evento_id, qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id)
+            SELECT :ev_id, qt.qualificacao_id, qt.gravidade_id, qt.protocolo_id, qt.meio_id, qt.orgao_id
+              FROM qualificacao_tratamento qt
+             WHERE qt.qualificacao_id = :qid
+            ON CONFLICT (evento_id, qualificacao_id) DO NOTHING
+        """), {"ev_id": ev_id, "qid": qid})
+
+
+
+def _refresh_tratamento_flat(conn, ev_id: int):
+    """Atualiza colunas flatten (tratamento_*) na tabela eventos a partir de evento_tratamento.
+    Objetivo: permitir Grafana/queries simples sem JOINs complexos.
+    - tratamento_status: 'PENDENTE' | 'TRATADO' (quando confirmado='SIM')
+    - tratamento_resumo: texto curto agregado (gravidade/meio/órgão + qualificação)
+    - tratamento_em: timestamp de criação do tratamento (max created_at)
+    """
+    try:
+        row = conn.execute(text("""
+            SELECT
+              COUNT(*) AS n,
+              STRING_AGG(DISTINCT qi.nome, ', ' ORDER BY qi.nome) AS quals,
+              STRING_AGG(DISTINCT g.nome,  ', ' ORDER BY g.nome)  AS gravs,
+              STRING_AGG(DISTINCT m.nome,  ', ' ORDER BY m.nome)  AS meios,
+              STRING_AGG(DISTINCT o.nome,  ', ' ORDER BY o.nome)  AS orgaos,
+              MAX(t.created_at) AS last_at
+            FROM evento_tratamento t
+            JOIN qualificacao_incidente qi ON qi.id = t.qualificacao_id
+            JOIN gravidade g ON g.id = t.gravidade_id
+            JOIN meio_acionamento m ON m.id = t.meio_id
+            JOIN orgao_acionado o ON o.id = t.orgao_id
+            WHERE t.evento_id = :id
+        """), {"id": int(ev_id)}).first()
+        n = int(row[0] or 0) if row else 0
+        quals, gravs, meios, orgaos, last_at = (row[1], row[2], row[3], row[4], row[5]) if row else (None,None,None,None,None)
+
+        if n <= 0:
+            # se confirmado, mas sem tratamento, marca como pendente
+            conn.execute(text("""
+                UPDATE eventos
+                   SET tratamento_status = CASE WHEN confirmado = :c THEN 'PENDENTE' ELSE COALESCE(NULLIF(tratamento_status,''),'') END,
+                       tratamento_resumo = CASE WHEN confirmado = :c THEN COALESCE(NULLIF(tratamento_resumo,''),'') ELSE COALESCE(NULLIF(tratamento_resumo,''),'') END,
+                       tratamento_em = CASE WHEN confirmado = :c THEN COALESCE(NULLIF(tratamento_em,''),'') ELSE COALESCE(NULLIF(tratamento_em,''),'') END
+                 WHERE id = :id
+            """), {"id": int(ev_id), "c": CONFIRM_VALUE})
+            return
+
+        resumo_parts = []
+        if gravs: resumo_parts.append(f"Gravidade: {gravs}")
+        if orgaos: resumo_parts.append(f"Órgão: {orgaos}")
+        if meios: resumo_parts.append(f"Meio: {meios}")
+        if quals: resumo_parts.append(f"Qualificação: {quals}")
+        resumo = " | ".join(resumo_parts)[:2000]
+
+        conn.execute(text("""
+            UPDATE eventos
+               SET tratamento_status = 'TRATADO',
+                   tratamento_resumo = :resumo,
+                   tratamento_em = COALESCE(:tem, tratamento_em)
+             WHERE id = :id
+        """), {"id": int(ev_id), "resumo": resumo or '', "tem": (str(last_at) if last_at else '')})
+    except Exception:
+        # nunca derrubar confirmação por causa desse espelho
+        app.logger.exception('Falha ao atualizar tratamento_* flatten para evento %s', ev_id)
 def _ensure_columns():
     """Migração leve: adiciona colunas que faltarem."""
     if BACKEND == "sqlite":
@@ -198,6 +439,10 @@ def _ensure_columns():
             if "relato_operador"  not in names: add("relato_operador")
             if "confirmado_por"   not in names: add("confirmado_por")
             if "confirmado_em"    not in names: add("confirmado_em")
+            # NOVO (tratamento flatten p/ Grafana)
+            if "tratamento_status" not in names: add("tratamento_status")
+            if "tratamento_resumo" not in names: add("tratamento_resumo")
+            if "tratamento_em"     not in names: add("tratamento_em")
     else:
         stmts = [
             # existentes
@@ -222,6 +467,10 @@ def _ensure_columns():
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS relato_operador TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS confirmado_por TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS confirmado_em TEXT",
+            # NOVO (tratamento flatten p/ Grafana)
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS tratamento_status TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS tratamento_resumo TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS tratamento_em TEXT",
         ]
         with engine.begin() as conn:
             for s in stmts:
@@ -241,6 +490,18 @@ def init_db():
     os.makedirs("static", exist_ok=True)
     os.makedirs(os.path.join("static", "ev"), exist_ok=True)
 
+
+    # Backfill: se já houver eventos confirmados sem tratamento_status, marca como PENDENTE (não altera tratados).
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+                UPDATE eventos
+                   SET tratamento_status = 'PENDENTE'
+                 WHERE (tratamento_status IS NULL OR tratamento_status = '')
+                   AND confirmado = 'SIM'
+            """))
+    except Exception:
+        app.logger.exception('Falha no backfill de tratamento_status')
 def salvar_evento(ev: dict):
     with engine.begin() as conn:
         conn.execute(eventos_tb.insert().values(**ev))
@@ -267,6 +528,9 @@ def buscar_eventos(filtro=None, data=None, status=None, confirmado=None, limit=5
         "COALESCE(relato_operador,'') AS relato_operador,",
         "COALESCE(confirmado_por,'') AS confirmado_por,",
         "COALESCE(confirmado_em,'') AS confirmado_em",
+        ", COALESCE(tratamento_status,'') AS tratamento_status"
+        ", COALESCE(tratamento_resumo,'') AS tratamento_resumo"
+        ", COALESCE(tratamento_em,'') AS tratamento_em"
         "FROM eventos WHERE 1=1",
     ]
     params = {}
@@ -338,6 +602,9 @@ def buscar_eventos(filtro=None, data=None, status=None, confirmado=None, limit=5
             relato_operador=r[20] or "",
             confirmado_por=r[21] or "",
             confirmado_em=r[22] or "",
+            tratamento_status=r[23] or "",
+            tratamento_resumo=r[24] or "",
+            tratamento_em=r[25] or "",
         ))
     return evs
 
@@ -740,21 +1007,24 @@ def receber_evento():
         row = _row_by_keys(conn)
 
         if row:
-            # UPDATE dos campos variáveis + timestamp
+            # UPDATE seguro: NÃO sobrescreve campos com string vazia.
+            # Isso evita "apagar" sha256, llava_pt, img_url, imagem, etc., quando chegam eventos parciais.
+            params = {k: ("" if v is None else v) for k, v in base_row.items() if k != "timestamp"}
+            params["id"] = int(row[0])
+            params["ts"] = _now_str()
+
             set_parts = []
-            params = {}
-            for k, v in base_row.items():
-                if k in ("timestamp",):
+            for k in base_row.keys():
+                if k == "timestamp":
                     continue
-                set_parts.append(f"{k}=:{k}")
-                params[k] = v
-            params["id"] = row[0]
+                # mantém o valor existente se o payload vier vazio
+                set_parts.append(f"{k}=COALESCE(NULLIF(:{k},''), {k})")
 
             conn.execute(
                 text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
-                dict(params, ts=_now_str())
+                params
             )
-            ev_id = row[0]
+            ev_id = int(row[0])
         else:
             r = conn.execute(eventos_tb.insert().values(**base_row))
             try:
@@ -1382,7 +1652,10 @@ def confirmar_ui():
                        SET confirmado='',
                            relato_operador='',
                            confirmado_por='',
-                           confirmado_em=''
+                           confirmado_em='',
+                           tratamento_status='',
+                           tratamento_resumo='',
+                           tratamento_em=''
                      WHERE id=:id
                 """), {"id": ev_id})
                 conn.execute(text("DELETE FROM evento_qualificacao WHERE evento_id=:id"), {"id": ev_id})
@@ -1408,6 +1681,8 @@ def confirmar_ui():
                            relato_operador=:r,
                            confirmado_por=:p,
                            confirmado_em=:em,
+                           tratamento_status = 'PENDENTE',
+                           tratamento_em = COALESCE(NULLIF(tratamento_em,''), :em),
                            sha256 = COALESCE(NULLIF(sha256,''), NULLIF(:sha,''))
                      WHERE id=:id
                 """), {
@@ -1422,7 +1697,15 @@ def confirmar_ui():
                 # Atualiza relação N:N com as qualificações escolhidas
                 _salvar_qualificacoes_evento(conn, ev_id, qual_ids)
 
-                # Após confirmar/desfazer: tenta fechar a aba. Se o browser bloquear, redireciona.
+                
+
+                # aplica matriz de tratamento (gravidade/protocolo/meio/órgão)
+                try:
+                    _salvar_tratamento_evento(conn, ev_id, qual_ids)
+                    _refresh_tratamento_flat(conn, ev_id)
+                except Exception:
+                    app.logger.exception('Falha ao salvar tratamento do evento %s', ev_id)
+# Após confirmar/desfazer: tenta fechar a aba. Se o browser bloquear, redireciona.
         return _close_window_html(next_url)
 
 
@@ -1582,6 +1865,8 @@ def api_confirmar():
                        relato_operador=:r,
                        confirmado_por=:p,
                        confirmado_em=:em,
+                       tratamento_status = 'PENDENTE',
+                       tratamento_em = COALESCE(NULLIF(tratamento_em,''), :em),
                        sha256 = COALESCE(NULLIF(sha256,''), NULLIF(:sha,''))
                  WHERE id=:id
             """),
@@ -1613,7 +1898,10 @@ def api_desconfirmar():
                    SET confirmado='',
                        relato_operador='',
                        confirmado_por='',
-                       confirmado_em=''
+                       confirmado_em='',
+                       tratamento_status='',
+                       tratamento_resumo='',
+                       tratamento_em=''
                  WHERE id=:id
             """),
             {"id": ev_id}
@@ -1770,6 +2058,7 @@ def api_events():
            COALESCE(model_yolo,''), COALESCE(classes,''), COALESCE(yolo_conf,''), COALESCE(yolo_imgsz,''),
            COALESCE(llava_pt,''),
            COALESCE(confirmado,''), COALESCE(relato_operador,''), COALESCE(confirmado_por,''), COALESCE(confirmado_em,''),
+           COALESCE(tratamento_status,''), COALESCE(tratamento_resumo,''), COALESCE(tratamento_em,''),
            CASE WHEN imagem IS NULL OR imagem = '' THEN 0 ELSE 1 END AS has_img
       FROM eventos
      WHERE {" AND ".join(clauses)}
@@ -1804,8 +2093,11 @@ def api_events():
             "relato_operador": r[17] or "",
             "confirmado_por": r[18] or "",
             "confirmado_em": r[19] or "",
-            "has_img": bool(r[20]),
-            "image_url": url_for("img", ev_id=r[0], _external=True) if r[20] else ""
+            "tratamento_status": r[20] or "",
+            "tratamento_resumo": r[21] or "",
+            "tratamento_em": r[22] or "",
+            "has_img": bool(r[23]),
+            "image_url": url_for("img", ev_id=r[0], _external=True) if r[23] else ""
         })
     return jsonify(out)
 
