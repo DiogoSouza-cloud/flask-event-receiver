@@ -120,6 +120,241 @@ evento_qualificacao_tb = Table(
     Column("qualificacao_id", Integer, primary_key=True, nullable=False),
 )
 
+
+# =========================
+# Tratamento / Qualificação (tabelas auxiliares)
+# =========================
+
+gravidade_tb = Table(
+    "gravidade",
+    md,
+    Column("id", Integer, primary_key=True),
+    Column("nome", Text, nullable=False, unique=True),
+)
+
+protocolo_tratamento_tb = Table(
+    "protocolo_tratamento",
+    md,
+    Column("id", Integer, primary_key=True),
+    Column("descricao", Text, nullable=False, unique=True),
+)
+
+meio_acionamento_tb = Table(
+    "meio_acionamento",
+    md,
+    Column("id", Integer, primary_key=True),
+    Column("nome", Text, nullable=False, unique=True),
+)
+
+orgao_acionado_tb = Table(
+    "orgao_acionado",
+    md,
+    Column("id", Integer, primary_key=True),
+    Column("nome", Text, nullable=False, unique=True),
+)
+
+# Mapeia 1 qualificação -> (gravidade, protocolo, meio, órgão)
+qualificacao_regra_tb = Table(
+    "qualificacao_regra",
+    md,
+    Column("qualificacao_id", Integer, primary_key=True, nullable=False),
+    Column("gravidade_id", Integer, nullable=False),
+    Column("protocolo_id", Integer, nullable=False),
+    Column("meio_id", Integer, nullable=False),
+    Column("orgao_id", Integer, nullable=False),
+)
+
+# Histórico de tratamento por evento (uma linha por qualificação marcada)
+evento_tratamento_tb = Table(
+    "evento_tratamento",
+    md,
+    Column("evento_id", Integer, primary_key=True, nullable=False),
+    Column("qualificacao_id", Integer, primary_key=True, nullable=False),
+    Column("gravidade_id", Integer, nullable=False),
+    Column("protocolo_id", Integer, nullable=False),
+    Column("meio_id", Integer, nullable=False),
+    Column("orgao_id", Integer, nullable=False),
+    Column("criado_em", Text, nullable=False),
+)
+
+TRATAMENTO_FIXO = [
+    {
+        "qualificacao": "Tentativa de acesso não autorizado",
+        "gravidade": "Média",
+        "protocolo": "Monitorar, registrar evidências, verificar recorrência, acionar se persistente",
+        "meio": "Telefone 21 99999-9999",
+        "orgao": "Vigilância Privada",
+    },
+    {
+        "qualificacao": "Furto",
+        "gravidade": "Média",
+        "protocolo": "Confirmar ocorrência, registrar imagens, acionar patrulha",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    {
+        "qualificacao": "Dano ao patrimônio público ou privado",
+        "gravidade": "Baixa",
+        "protocolo": "Registrar, avaliar extensão do dano, acionar a Guarda Municipal",
+        "meio": "Automático Sistema",
+        "orgao": "Guarda Municipal",
+    },
+    {
+        "qualificacao": "Roubo",
+        "gravidade": "Alta",
+        "protocolo": "Acionamento imediato, preservação de imagens, acompanhamento em tempo real",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    {
+        "qualificacao": "Ostentação de arma de fogo",
+        "gravidade": "Crítica",
+        "protocolo": "Alerta imediato, monitoramento contínuo, despacho emergencial",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    {
+        "qualificacao": "Porte de arma oculta",
+        "gravidade": "Alta",
+        "protocolo": "Monitoramento discreto, alerta preventivo, registro para inteligência",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    {
+        "qualificacao": "Acidente em via pública",
+        "gravidade": "Média",
+        "protocolo": "Avaliar vítimas, acionar emergência conforme gravidade",
+        "meio": "Automático Sistema",
+        "orgao": "Guarda Municipal",
+    },
+    {
+        "qualificacao": "Agressão física sem arma",
+        "gravidade": "Alta",
+        "protocolo": "Acionamento imediato, monitoramento do conflito",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    {
+        "qualificacao": "Ataque com arma branca",
+        "gravidade": "Crítica",
+        "protocolo": "Alerta máximo, despacho urgente, preservação de provas",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    {
+        "qualificacao": "Ataque com arma de fogo",
+        "gravidade": "Crítica",
+        "protocolo": "Protocolo de emergência máxima, múltiplos acionamentos",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    {
+        "qualificacao": "Violência sexual",
+        "gravidade": "Crítica",
+        "protocolo": "Acionamento imediato, preservação rigorosa de imagens",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+    {
+        "qualificacao": "Conflito generalizado",
+        "gravidade": "Alta",
+        "protocolo": "Monitoramento ampliado, acionamento preventivo ou repressivo",
+        "meio": "Automático Sistema",
+        "orgao": "Polícia Militar",
+    },
+]
+
+def _seed_tratamento():
+    """Popula tabelas de tratamento e regras fixas (qualificação -> gravidade/protocolo/meio/órgão)."""
+    with engine.begin() as conn:
+        # Garante que as tabelas existam
+        md.create_all(engine)
+
+        # Mapas auxiliares
+        # Qualificação: nome -> id
+        q_rows = conn.execute(text("SELECT id, nome FROM qualificacao_incidente")).fetchall()
+        q_map = {r[1]: int(r[0]) for r in q_rows}
+
+        def _upsert_lookup(table, col, value):
+            if not value:
+                return None
+            # tenta achar
+            row = conn.execute(text(f"SELECT id FROM {table} WHERE {col}=:v LIMIT 1"), {"v": value}).first()
+            if row:
+                return int(row[0])
+            conn.execute(text(f"INSERT INTO {table}({col}) VALUES (:v)"), {"v": value})
+            row2 = conn.execute(text(f"SELECT id FROM {table} WHERE {col}=:v LIMIT 1"), {"v": value}).first()
+            return int(row2[0]) if row2 else None
+
+        for r in TRATAMENTO_FIXO:
+            qnome = r["qualificacao"]
+            qid = q_map.get(qnome)
+            if not qid:
+                # Se o nome não bater exatamente (ex.: espaços), ignora para não quebrar o deploy
+                continue
+
+            gid = _upsert_lookup("gravidade", "nome", r["gravidade"])
+            pid = _upsert_lookup("protocolo_tratamento", "descricao", r["protocolo"])
+            mid = _upsert_lookup("meio_acionamento", "nome", r["meio"])
+            oid = _upsert_lookup("orgao_acionado", "nome", r["orgao"])
+
+            # regra por qualificação
+            # Postgres: ON CONFLICT; SQLite: também suporta para PK/UNIQUE
+            conn.execute(text("""
+                INSERT INTO qualificacao_regra
+                    (qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id)
+                VALUES
+                    (:qid, :gid, :pid, :mid, :oid)
+                ON CONFLICT (qualificacao_id) DO UPDATE SET
+                    gravidade_id = EXCLUDED.gravidade_id,
+                    protocolo_id = EXCLUDED.protocolo_id,
+                    meio_id = EXCLUDED.meio_id,
+                    orgao_id = EXCLUDED.orgao_id
+            """), {"qid": qid, "gid": gid, "pid": pid, "mid": mid, "oid": oid})
+
+def _salvar_tratamento_evento(conn, evento_id: int, qual_ids: list[int]):
+    """Cria/atualiza o(s) registro(s) em evento_tratamento conforme as regras fixas."""
+    if evento_id <= 0:
+        return
+
+    # Limpa registros anteriores (evita duplicação se reconfirmar)
+    conn.execute(text("DELETE FROM evento_tratamento WHERE evento_id=:e"), {"e": evento_id})
+
+    if not qual_ids:
+        return
+
+    for qid in qual_ids:
+        row = conn.execute(text("""
+            SELECT qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id
+              FROM qualificacao_regra
+             WHERE qualificacao_id = :qid
+             LIMIT 1
+        """), {"qid": int(qid)}).first()
+        if not row:
+            continue
+
+        conn.execute(text("""
+            INSERT INTO evento_tratamento
+                (evento_id, qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id, criado_em)
+            VALUES
+                (:e, :qid, :gid, :pid, :mid, :oid, :ts)
+            ON CONFLICT (evento_id, qualificacao_id) DO UPDATE SET
+                gravidade_id = EXCLUDED.gravidade_id,
+                protocolo_id = EXCLUDED.protocolo_id,
+                meio_id = EXCLUDED.meio_id,
+                orgao_id = EXCLUDED.orgao_id,
+                criado_em = EXCLUDED.criado_em
+        """), {
+            "e": int(evento_id),
+            "qid": int(row[0]),
+            "gid": int(row[1]),
+            "pid": int(row[2]),
+            "mid": int(row[3]),
+            "oid": int(row[4]),
+            "ts": _now_str(),
+        })
+
+
 def _seed_qualificacoes():
     """Garante que a tabela de qualificações exista e esteja populada com os valores fixos."""
     with engine.begin() as conn:
@@ -238,6 +473,11 @@ def init_db():
     except Exception as _e:
         # não impede subida do serviço se a seed falhar
         print('WARN: seed qualificacoes falhou:', _e)
+
+    try:
+        _seed_tratamento()
+    except Exception as _e:
+        print('WARN: seed tratamento falhou:', _e)
     os.makedirs("static", exist_ok=True)
     os.makedirs(os.path.join("static", "ev"), exist_ok=True)
 
@@ -1386,6 +1626,7 @@ def confirmar_ui():
                      WHERE id=:id
                 """), {"id": ev_id})
                 conn.execute(text("DELETE FROM evento_qualificacao WHERE evento_id=:id"), {"id": ev_id})
+                conn.execute(text("DELETE FROM evento_tratamento WHERE evento_id=:id"), {"id": ev_id})
             else:
                 if not relato:
                     return "Relato é obrigatório para confirmar.", 400
@@ -1421,6 +1662,7 @@ def confirmar_ui():
 
                 # Atualiza relação N:N com as qualificações escolhidas
                 _salvar_qualificacoes_evento(conn, ev_id, qual_ids)
+                _salvar_tratamento_evento(conn, ev_id, qual_ids)
 
                 # Após confirmar/desfazer: tenta fechar a aba. Se o browser bloquear, redireciona.
         return _close_window_html(next_url)
