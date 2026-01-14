@@ -505,6 +505,10 @@ def _ensure_columns():
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS tratamento_status TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS tratamento_resumo TEXT",
             "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS tratamento_em TEXT",
+            # NOVO (dados suplementares - estatística)
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS vitimas_aparentes TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS criancas_ou_idosos TEXT",
+            "ALTER TABLE eventos ADD COLUMN IF NOT EXISTS em_andamento TEXT",
         ]
         with engine.begin() as conn:
             for s in stmts:
@@ -1359,7 +1363,12 @@ def _load_event_by_id(ev_id: int):
                    END AS tem_img,
                    COALESCE(img_url,'') AS img_url,
                    COALESCE(camera_id,''), COALESCE(camera_name,''), COALESCE(local,''),
-                   COALESCE(llava_pt,'')
+                   COALESCE(llava_pt,''),
+                   COALESCE(relato_operador,''),
+                   COALESCE(confirmado_por,''),
+                   COALESCE(vitimas_aparentes,''),
+                   COALESCE(criancas_ou_idosos,''),
+                   COALESCE(em_andamento,'')
             FROM eventos
             WHERE id=:id
         """), {"id": ev_id}).first()
