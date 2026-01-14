@@ -500,8 +500,11 @@ def init_db():
                  WHERE (tratamento_status IS NULL OR tratamento_status = '')
                    AND confirmado = 'SIM'
             """))
-    except Exception:
-        app.logger.exception('Falha no backfill de tratamento_status')
+    except Exception as _e:
+        try:
+            app.logger.exception('Falha no backfill de tratamento_status')
+        except Exception:
+            print('WARN: backfill tratamento_status falhou:', _e)
 def salvar_evento(ev: dict):
     with engine.begin() as conn:
         conn.execute(eventos_tb.insert().values(**ev))
@@ -753,6 +756,13 @@ HTML_TEMPLATE = """
 
 # -------------------- App --------------------
 app = Flask(__name__)
+
+# Garante schema/seed também em deploy via gunicorn (import app:app)
+try:
+    init_db()
+except Exception as _e:
+    # Não impede a subida do serviço; erros de migração/seed aparecerão nos logs
+    print('WARN: init_db falhou:', _e)
 
 # Pré-compila templates para reduzir alocações por request
 _MAIN_TEMPLATE = app.jinja_env.from_string(HTML_TEMPLATE)
