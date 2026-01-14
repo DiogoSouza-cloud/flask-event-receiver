@@ -125,8 +125,6 @@ def _seed_qualificacoes():
     with engine.begin() as conn:
         # cria tabelas (caso ainda não existam)
         md.create_all(engine)
-        # cria/popula matriz de tratamento (tabelas + mapeamento fixo)
-        _ensure_tratamento_tables_and_seed(conn)
 
         # busca existentes
         existentes = {
@@ -168,186 +166,6 @@ def _salvar_qualificacoes_evento(conn, evento_id: int, qual_ids):
             ),
             {"e": int(evento_id), "q": int(qid)},
         )
-
-
-
-# =========================
-# Matriz de tratamento (Qualificação -> Gravidade/Protocolo/Meio/Órgão)
-# =========================
-TRATAMENTO_MATRIZ = {
-    "Tentativa de acesso não autorizado": {
-        "gravidade": "Média",
-        "protocolo": "Monitorar, registrar evidências, verificar recorrência, acionar se persistente",
-        "meio": "Telefone 21 99999-9999",
-        "orgao": "Vigilância Privada",
-    },
-    "Furto": {
-        "gravidade": "Média",
-        "protocolo": "Confirmar ocorrência, registrar imagens, acionar patrulha",
-        "meio": "Automático Sistema",
-        "orgao": "Polícia Militar",
-    },
-    "Dano ao patrimônio público ou privado": {
-        "gravidade": "Baixa",
-        "protocolo": "Registrar, avaliar extensão do dano, acionar a Guarda Municipal",
-        "meio": "Automático Sistema",
-        "orgao": "Guarda Municipal",
-    },
-    "Roubo": {
-        "gravidade": "Alta",
-        "protocolo": "Acionamento imediato, preservação de imagens, acompanhamento em tempo real",
-        "meio": "Automático Sistema",
-        "orgao": "Polícia Militar",
-    },
-    "Ostentação de arma de fogo": {
-        "gravidade": "Crítica",
-        "protocolo": "Alerta imediato, monitoramento contínuo, despacho emergencial",
-        "meio": "Automático Sistema",
-        "orgao": "Polícia Militar",
-    },
-    "Porte de arma oculta": {
-        "gravidade": "Alta",
-        "protocolo": "Monitoramento discreto, alerta preventivo, registro para inteligência",
-        "meio": "Automático Sistema",
-        "orgao": "Polícia Militar",
-    },
-    "Acidente em via pública": {
-        "gravidade": "Média",
-        "protocolo": "Avaliar vítimas, acionar emergência conforme gravidade",
-        "meio": "Automático Sistema",
-        "orgao": "Guarda Municipal",
-    },
-    "Agressão física sem arma": {
-        "gravidade": "Alta",
-        "protocolo": "Acionamento imediato, monitoramento do conflito",
-        "meio": "Automático Sistema",
-        "orgao": "Polícia Militar",
-    },
-    "Ataque com arma branca": {
-        "gravidade": "Crítica",
-        "protocolo": "Alerta máximo, despacho urgente, preservação de provas",
-        "meio": "Automático Sistema",
-        "orgao": "Polícia Militar",
-    },
-    "Ataque com arma de fogo": {
-        "gravidade": "Crítica",
-        "protocolo": "Protocolo de emergência máxima, múltiplos acionamentos",
-        "meio": "Automático Sistema",
-        "orgao": "Polícia Militar",
-    },
-    "Violência sexual": {
-        "gravidade": "Crítica",
-        "protocolo": "Acionamento imediato, preservação rigorosa de imagens",
-        "meio": "Automático Sistema",
-        "orgao": "Polícia Militar",
-    },
-    "Conflito generalizado": {
-        "gravidade": "Alta",
-        "protocolo": "Monitoramento ampliado, acionamento preventivo ou repressivo",
-        "meio": "Automático Sistema",
-        "orgao": "Polícia Militar",
-    },
-}
-
-
-def _ensure_tratamento_tables_and_seed(conn):
-    """Cria (se necessário) as tabelas de tratamento e popula a matriz fixa."""
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS gravidade (
-            id SERIAL PRIMARY KEY,
-            nome TEXT UNIQUE NOT NULL
-        );
-    """))
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS protocolo_tratamento (
-            id SERIAL PRIMARY KEY,
-            descricao TEXT UNIQUE NOT NULL
-        );
-    """))
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS meio_acionamento (
-            id SERIAL PRIMARY KEY,
-            nome TEXT UNIQUE NOT NULL
-        );
-    """))
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS orgao_acionado (
-            id SERIAL PRIMARY KEY,
-            nome TEXT UNIQUE NOT NULL
-        );
-    """))
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS qualificacao_tratamento (
-            qualificacao_id INTEGER PRIMARY KEY
-                REFERENCES qualificacao_incidente(id) ON DELETE CASCADE,
-            gravidade_id INTEGER NOT NULL REFERENCES gravidade(id),
-            protocolo_id INTEGER NOT NULL REFERENCES protocolo_tratamento(id),
-            meio_id INTEGER NOT NULL REFERENCES meio_acionamento(id),
-            orgao_id INTEGER NOT NULL REFERENCES orgao_acionado(id)
-        );
-    """))
-    conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS evento_tratamento (
-            evento_id INTEGER NOT NULL REFERENCES eventos(id) ON DELETE CASCADE,
-            qualificacao_id INTEGER NOT NULL REFERENCES qualificacao_incidente(id) ON DELETE CASCADE,
-            gravidade_id INTEGER NOT NULL REFERENCES gravidade(id),
-            protocolo_id INTEGER NOT NULL REFERENCES protocolo_tratamento(id),
-            meio_id INTEGER NOT NULL REFERENCES meio_acionamento(id),
-            orgao_id INTEGER NOT NULL REFERENCES orgao_acionado(id),
-            created_at TIMESTAMP DEFAULT NOW(),
-            PRIMARY KEY (evento_id, qualificacao_id)
-        );
-    """))
-
-    gravidades = {v["gravidade"] for v in TRATAMENTO_MATRIZ.values()}
-    meios = {v["meio"] for v in TRATAMENTO_MATRIZ.values()}
-    orgaos = {v["orgao"] for v in TRATAMENTO_MATRIZ.values()}
-    protocolos = {v["protocolo"] for v in TRATAMENTO_MATRIZ.values()}
-
-    for g in sorted(gravidades):
-        conn.execute(text("INSERT INTO gravidade (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING"), {"n": g})
-    for m in sorted(meios):
-        conn.execute(text("INSERT INTO meio_acionamento (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING"), {"n": m})
-    for o in sorted(orgaos):
-        conn.execute(text("INSERT INTO orgao_acionado (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING"), {"n": o})
-    for p in sorted(protocolos):
-        conn.execute(text("INSERT INTO protocolo_tratamento (descricao) VALUES (:d) ON CONFLICT (descricao) DO NOTHING"), {"d": p})
-
-    for qual_nome, meta in TRATAMENTO_MATRIZ.items():
-        conn.execute(text("""
-            INSERT INTO qualificacao_tratamento (qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id)
-            SELECT qi.id, g.id, p.id, m.id, o.id
-              FROM qualificacao_incidente qi
-              JOIN gravidade g ON g.nome = :grav
-              JOIN protocolo_tratamento p ON p.descricao = :prot
-              JOIN meio_acionamento m ON m.nome = :meio
-              JOIN orgao_acionado o ON o.nome = :org
-             WHERE qi.nome = :qual
-            ON CONFLICT (qualificacao_id) DO NOTHING
-        """), {
-            "qual": qual_nome,
-            "grav": meta["gravidade"],
-            "prot": meta["protocolo"],
-            "meio": meta["meio"],
-            "org": meta["orgao"],
-        })
-
-
-def _salvar_tratamento_evento(conn, ev_id: int, qual_ids):
-    """Aplica a matriz para o evento, gerando linhas em evento_tratamento."""
-    qual_ids = [int(q) for q in (qual_ids or []) if str(q).strip().isdigit()]
-    conn.execute(text("DELETE FROM evento_tratamento WHERE evento_id=:id"), {"id": ev_id})
-    if not qual_ids:
-        return
-
-    for qid in dict.fromkeys(qual_ids):
-        conn.execute(text("""
-            INSERT INTO evento_tratamento (evento_id, qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id)
-            SELECT :ev_id, qt.qualificacao_id, qt.gravidade_id, qt.protocolo_id, qt.meio_id, qt.orgao_id
-              FROM qualificacao_tratamento qt
-             WHERE qt.qualificacao_id = :qid
-            ON CONFLICT (evento_id, qualificacao_id) DO NOTHING
-        """), {"ev_id": ev_id, "qid": qid})
 
 
 def _ensure_columns():
@@ -922,24 +740,21 @@ def receber_evento():
         row = _row_by_keys(conn)
 
         if row:
-            # UPDATE seguro: NÃO sobrescreve campos com string vazia.
-            # Isso evita "apagar" sha256, llava_pt, img_url, imagem, etc., quando chegam eventos parciais.
-            params = {k: ("" if v is None else v) for k, v in base_row.items() if k != "timestamp"}
-            params["id"] = int(row[0])
-            params["ts"] = _now_str()
-
+            # UPDATE dos campos variáveis + timestamp
             set_parts = []
-            for k in base_row.keys():
-                if k == "timestamp":
+            params = {}
+            for k, v in base_row.items():
+                if k in ("timestamp",):
                     continue
-                # mantém o valor existente se o payload vier vazio
-                set_parts.append(f"{k}=COALESCE(NULLIF(:{k},''), {k})")
+                set_parts.append(f"{k}=:{k}")
+                params[k] = v
+            params["id"] = row[0]
 
             conn.execute(
                 text("UPDATE eventos SET " + ", ".join(set_parts) + ", timestamp=:ts WHERE id=:id"),
-                params
+                dict(params, ts=_now_str())
             )
-            ev_id = int(row[0])
+            ev_id = row[0]
         else:
             r = conn.execute(eventos_tb.insert().values(**base_row))
             try:
@@ -1607,14 +1422,7 @@ def confirmar_ui():
                 # Atualiza relação N:N com as qualificações escolhidas
                 _salvar_qualificacoes_evento(conn, ev_id, qual_ids)
 
-                
-
-                # aplica matriz de tratamento (gravidade/protocolo/meio/órgão)
-                try:
-                    _salvar_tratamento_evento(conn, ev_id, qual_ids)
-                except Exception:
-                    app.logger.exception('Falha ao salvar tratamento do evento %s', ev_id)
-# Após confirmar/desfazer: tenta fechar a aba. Se o browser bloquear, redireciona.
+                # Após confirmar/desfazer: tenta fechar a aba. Se o browser bloquear, redireciona.
         return _close_window_html(next_url)
 
 
