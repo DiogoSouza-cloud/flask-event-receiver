@@ -928,6 +928,9 @@ def receber_evento():
             for k, v in base_row.items():
                 if k in ("timestamp",):
                     continue
+                # Não sobrescrever valores já persistidos com vazio (ex.: sha256, camera_name, local).
+                if v is None or v == "":
+                    continue
                 set_parts.append(f"{k}=:{k}")
                 params[k] = v
             params["id"] = row[0]
