@@ -1249,11 +1249,12 @@ CONFIRM_UI_TEMPLATE = """
     /* Dados suplementares (lado do Operador) */
     .opgrid{display:grid;grid-template-columns:260px 1fr;gap:12px;align-items:start;}
     @media (max-width: 980px){ .opgrid{grid-template-columns:1fr;} }
-    .suppBox{border:1px solid var(--border);border-radius:12px;padding:10px;background:#fff;}
-    .suppBox h4{margin:0 0 8px 0;font-size:14px;}
-    .suppItem{display:flex;gap:10px;align-items:flex-start;margin:8px 0;}
-    .suppItem input{margin-top:3px;}
-    .suppItem span{line-height:1.2;}
+    .suppBox{border:1px solid var(--border);border-radius:12px;padding:8px 10px;background:#fff;}
+    .suppBox h4{margin:0 0 6px 0;font-size:14px;}
+    .suppGrid{display:flex;flex-wrap:wrap;gap:14px;align-items:center;}
+    .suppItem{display:flex;gap:8px;align-items:center;margin:0;}
+    .suppItem input[type=checkbox]{width:auto;border:0;padding:0;box-shadow:none;}
+    .suppItem span{line-height:1.1;font-size:13px;}
   </style>
 </head>
 <body>
@@ -1324,7 +1325,7 @@ CONFIRM_UI_TEMPLATE = """
                 <div>
                   <div class="suppBox">
                     <h4>Dados Suplementares</h4>
-                    <label class="suppItem">
+                    <div class="suppGrid"><label class="suppItem">
                       <input type="checkbox" name="sup_vitimas" value="SIM" {% if ev.vitimas_aparentes == 'SIM' %}checked{% endif %}>
                       <span>Presença de vítimas aparentes</span>
                     </label>
@@ -1336,7 +1337,7 @@ CONFIRM_UI_TEMPLATE = """
                       <input type="checkbox" name="sup_em_andamento" value="SIM" {% if ev.em_andamento == 'SIM' %}checked{% endif %}>
                       <span>Em andamento</span>
                     </label>
-                  </div>
+                  </div></div>
                 </div>
               </div>
             </div>
