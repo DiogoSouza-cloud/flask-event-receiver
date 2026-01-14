@@ -312,47 +312,61 @@ def _seed_tratamento():
                     orgao_id = EXCLUDED.orgao_id
             """), {"qid": qid, "gid": gid, "pid": pid, "mid": mid, "oid": oid})
 
-def _salvar_tratamento_evento(conn, evento_id: int, qual_ids: list[int]):
-    """Cria/atualiza o(s) registro(s) em evento_tratamento conforme as regras fixas."""
-    if evento_id <= 0:
+def _salvar_tratamento_evento(conn, evento_id: int, qualificacao_ids: list[int]):
+    """
+    Grava automaticamente os campos de tratamento (gravidade/protocolo/meio/órgão)
+    com base na(s) qualificação(ões) selecionada(s) em 'qualificacao_tratamento'.
+
+    Estratégia:
+      - Remove o tratamento atual do evento
+      - Recria a partir da seleção atual, garantindo consistência
+    """
+    # remove tudo (evita duplicação e mantém 1:1 com seleção atual)
+    conn.execute(text("DELETE FROM evento_tratamento WHERE evento_id=:id"), {"id": evento_id})
+
+    if not qualificacao_ids:
         return
 
-    # Limpa registros anteriores (evita duplicação se reconfirmar)
-    conn.execute(text("DELETE FROM evento_tratamento WHERE evento_id=:e"), {"e": evento_id})
+    now = _now_str()
 
-    if not qual_ids:
-        return
+    for qid in qualificacao_ids:
+        row = conn.execute(
+            text("""
+                SELECT qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id
+                  FROM qualificacao_tratamento
+                 WHERE qualificacao_id = :qid
+                 LIMIT 1
+            """),
+            {"qid": int(qid)},
+        ).first()
 
-    for qid in qual_ids:
-        row = conn.execute(text("""
-            SELECT qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id
-              FROM qualificacao_regra
-             WHERE qualificacao_id = :qid
-             LIMIT 1
-        """), {"qid": int(qid)}).first()
         if not row:
             continue
 
-        conn.execute(text("""
-            INSERT INTO evento_tratamento
-                (evento_id, qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id, criado_em)
-            VALUES
-                (:e, :qid, :gid, :pid, :mid, :oid, :ts)
-            ON CONFLICT (evento_id, qualificacao_id) DO UPDATE SET
-                gravidade_id = EXCLUDED.gravidade_id,
-                protocolo_id = EXCLUDED.protocolo_id,
-                meio_id = EXCLUDED.meio_id,
-                orgao_id = EXCLUDED.orgao_id,
-                criado_em = EXCLUDED.criado_em
-        """), {
-            "e": int(evento_id),
-            "qid": int(row[0]),
-            "gid": int(row[1]),
-            "pid": int(row[2]),
-            "mid": int(row[3]),
-            "oid": int(row[4]),
-            "ts": _now_str(),
-        })
+        conn.execute(
+            text("""
+                INSERT INTO evento_tratamento (
+                    evento_id, qualificacao_id,
+                    gravidade_id, protocolo_id, meio_id, orgao_id,
+                    criado_em
+                )
+                VALUES (
+                    :eid, :qid,
+                    :gid, :pid, :mid, :oid,
+                    :now
+                )
+            """),
+            {
+                "eid": int(evento_id),
+                "qid": int(row[0]),
+                "gid": int(row[1]),
+                "pid": int(row[2]),
+                "mid": int(row[3]),
+                "oid": int(row[4]),
+                "now": now,
+            },
+        )
+
 
 
 def _seed_qualificacoes():
