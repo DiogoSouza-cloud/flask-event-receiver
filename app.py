@@ -909,7 +909,7 @@ def index():
     return (
         "Online. "
         "POST /evento | POST /resposta_ia | "
-        "GET /historico | GET /indicios | GET /confirmados | GET /tratamentos | "
+        "GET /indicios | GET /confirmados | GET /tratamentos | "
         "POST /api/confirmar?key=... | POST /api/desconfirmar?key=... | "
         "GET /api/events | GET /api/stats | GET /admin/reset?key=..."
     )
@@ -2285,23 +2285,6 @@ def tratamentos_ui():
 
 
 # -------------------- Painéis Flask (BD) --------------------
-@app.route("/historico")
-def historico():
-    filtro = (request.args.get("filtro") or "").strip()
-    data = (request.args.get("data") or "").strip()
-    page = max(int(request.args.get("page") or 1), 1)
-    evs = buscar_eventos(filtro if filtro else None, data if data else None,
-                         status=None, confirmado=None, limit=50, offset=(page-1)*50)
-    return _render_main(
-        page_title="Painel Histórico",
-        eventos=evs,
-        filtro=filtro,
-        data=data,
-        page=page,
-        logo_url=_logo_url(),
-        iaprotect_url=_iaprotect_url()
-    )
-
 @app.route("/indicios")
 def indicios():
     filtro = (request.args.get("filtro") or "").strip()
