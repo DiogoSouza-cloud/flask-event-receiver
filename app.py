@@ -1198,54 +1198,40 @@ CONFIRM_UI_TEMPLATE = """
     .imgbox{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#fff;}
     .imgbox img{width:100%;display:block;}
     .imgempty{padding:32px;color:var(--muted);text-align:center;}
-    .qualbox{margin-top:12px;border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;}
-    .qualbox h3{margin:0 0 8px 0;font-size:16px;}
-    .qualhint{color:var(--muted);font-size:12px;margin:0 0 8px 0;}
-    /* ===== Qualificação (layout melhorado) ===== */
 
-    /* Alias: manter compatibilidade com class="qualList" id="qualList" */
     .qualbox{margin-top:12px;border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;}
     .qualbox h3{margin:0 0 8px 0;font-size:16px;}
     .qualhint{color:var(--muted);font-size:12px;margin:0 0 8px 0;}
 
-    /* ===== Qualificação (lista simples como antes) ===== */
-    .qualList{
-      max-height:280px;
-      overflow:auto;
-      padding-right:6px;
-    }
-    .qrow{
-      display:flex;
-      align-items:flex-start;
-      gap:10px;
-      padding:6px 6px;
-      border-radius:10px;
-    }
-    .qrow:hover{background:#f8fafc;}
+    /* Lista de qualificações (como era antes: texto alinhado e simples) */
+    .qualgrid{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;padding-right:6px;}
+    .qrow{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#fff;}
     .qrow input{margin-top:2px;}
-    .qrow span{display:block;line-height:1.25;word-break:break-word;}
+    .qrow span{display:block;line-height:1.2;word-break:break-word;}
 
     .meta{display:grid;grid-template-columns:160px 1fr;gap:6px 12px;margin-bottom:10px;}
     .meta .k{color:var(--muted);font-weight:600;}
     .pill{display:inline-block;padding:2px 10px;border-radius:999px;border:1px solid var(--border);font-size:12px;margin-left:6px;background:#fff;}
     .section{border-top:1px solid var(--border);padding-top:12px;margin-top:12px;}
     .label{font-weight:700;margin:0 0 6px 0;}
-    textarea,input{width:100%;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:14px;box-sizing:border-box;}
+
+    /* Importante: não aplicar width:100% em checkbox/radio */
+    input[type="text"], textarea{width:100%;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:14px;box-sizing:border-box;}
     textarea{min-height:120px;resize:vertical;}
+
     .actions{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;}
     .btn{border:0;border-radius:10px;padding:10px 16px;font-weight:700;color:#fff;cursor:pointer;}
     .btn-ok{background:var(--ok);}
     .btn-danger{background:var(--danger);}
     .note{color:var(--muted);font-size:12px;}
-    /* Dados suplementares (lado do Operador) */
-    .opgrid{display:grid;grid-template-columns:260px 1fr;gap:12px;align-items:start;}
-    @media (max-width: 980px){ .opgrid{grid-template-columns:1fr;} }
-    .suppBox{border:1px solid var(--border);border-radius:12px;padding:8px 10px;background:#fff;}
-    .suppBox h4{margin:0 0 6px 0;font-size:14px;}
-    .suppGrid{display:flex;flex-wrap:wrap;gap:14px;align-items:center;}
-    .suppItem{display:flex;gap:8px;align-items:center;margin:0;}
-    .suppItem input[type=checkbox]{width:auto;border:0;padding:0;box-shadow:none;}
-    .suppItem span{line-height:1.1;font-size:13px;}
+
+    /* Caixa de tratamento */
+    .tratamento{margin-top:12px;border-top:1px solid var(--border);padding-top:12px;}
+    .tbox{border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;}
+    .tgrid{display:grid;grid-template-columns:200px 1fr;gap:8px 12px;}
+    @media (max-width: 980px){ .tgrid{grid-template-columns:1fr;} }
+    .tk{color:var(--muted);font-weight:700;}
+    .tv{white-space:pre-wrap;}
   </style>
 </head>
 <body>
@@ -1273,11 +1259,11 @@ CONFIRM_UI_TEMPLATE = """
 
             <div class="qualbox">
               <h3>Qualificação do incidente</h3>
-              <p class="qualhint">Selecione uma ou mais opções (opcional).</p>
-              <div class="qualList" id="qualList">
+              <p class="qualhint">Selecione uma opção (opcional).</p>
+              <div class="qualgrid">
                 {% for q in qualificacoes %}
                   <label class="qrow">
-                    <input type="checkbox" name="qualificacoes" value="{{ q['id'] }}"
+                    <input type="radio" name="qualificacao" value="{{ q['id'] }}"
                       {% if q['id'] in qual_sel %}checked{% endif %}>
                     <span>{{ q['nome'] }}</span>
                   </label>
@@ -1308,29 +1294,8 @@ CONFIRM_UI_TEMPLATE = """
             </div>
 
             <div class="section">
-              <div class="opgrid">
-                <div>
-                  <p class="label">Operador:</p>
-                  <input name="operador" value="{{ ev.confirmado_por or '' }}" placeholder="ex.: op1" />
-                </div>
-                <div>
-                  <div class="suppBox">
-                    <h4>Dados Suplementares</h4>
-                    <div class="suppGrid"><label class="suppItem">
-                      <input type="checkbox" name="sup_vitimas" value="SIM" {% if ev.vitimas_aparentes == 'SIM' %}checked{% endif %}>
-                      <span>Presença de vítimas aparentes</span>
-                    </label>
-                    <label class="suppItem">
-                      <input type="checkbox" name="sup_criancas_idosos" value="SIM" {% if ev.criancas_ou_idosos == 'SIM' %}checked{% endif %}>
-                      <span>Envolvimento de crianças ou idosos</span>
-                    </label>
-                    <label class="suppItem">
-                      <input type="checkbox" name="sup_em_andamento" value="SIM" {% if ev.em_andamento == 'SIM' %}checked{% endif %}>
-                      <span>Em andamento</span>
-                    </label>
-                  </div></div>
-                </div>
-              </div>
+              <p class="label">Operador:</p>
+              <input type="text" name="operador" value="{{ ev.confirmado_por or '' }}" placeholder="ex.: op1" />
             </div>
 
             <div class="section">
@@ -1342,21 +1307,21 @@ CONFIRM_UI_TEMPLATE = """
               <button class="btn btn-ok" name="action" value="confirmar" type="submit">Confirmar</button>
               <button class="btn btn-danger" name="action" value="desconfirmar" type="submit">Desfazer</button>
               <span class="note">O relato é obrigatório para confirmar.</span>
-            
+            </div>
 
-            <div class="section" id="tratamentoSection">
+            <div class="tratamento">
               <p class="label">Protocolo de tratamento (automático)</p>
               <div id="tratamentoEmpty" class="note">Selecione uma qualificação do incidente para visualizar gravidade, protocolo e acionamentos.</div>
-              <div id="tratamentoBox" style="display:none; margin-top:8px; border:1px solid var(--border); border-radius:12px; padding:12px; background:#fff;">
-                <div class="meta" style="grid-template-columns:190px 1fr; margin-bottom:0;">
-                  <div class="k">Gravidade:</div><div id="t_grav">-</div>
-                  <div class="k">Protocolo de Tratamento:</div><div id="t_prot" style="white-space:pre-wrap">-</div>
-                  <div class="k">Meio de Acionamento:</div><div id="t_meio">-</div>
-                  <div class="k">Órgão Acionado:</div><div id="t_org">-</div>
+              <div id="tratamentoBox" class="tbox" style="display:none;">
+                <div class="tgrid">
+                  <div class="tk">Gravidade</div><div class="tv" id="t_grav"></div>
+                  <div class="tk">Protocolo de Tratamento</div><div class="tv" id="t_proto"></div>
+                  <div class="tk">Meio de Acionamento</div><div class="tv" id="t_meio"></div>
+                  <div class="tk">Órgão Acionado</div><div class="tv" id="t_org"></div>
                 </div>
               </div>
             </div>
-</div>
+
           </div>
         </div>
       </form>
@@ -1364,111 +1329,64 @@ CONFIRM_UI_TEMPLATE = """
   </div>
 
   <script>
-    (function(){
-  const key = {{ key_value|tojson }};
+    async function updateTratamento(qid){
+      const emptyEl = document.getElementById('tratamentoEmpty');
+      const boxEl = document.getElementById('tratamentoBox');
+      const gEl = document.getElementById('t_grav');
+      const pEl = document.getElementById('t_proto');
+      const mEl = document.getElementById('t_meio');
+      const oEl = document.getElementById('t_org');
 
-  const boxEl = document.getElementById('tratamentoBox');
-  const hintEl = document.getElementById('tratamentoHint');
-  const gridEl = document.getElementById('tratamentoGrid');
-
-  function getSelectedIds(){
-    const checked = Array.from(document.querySelectorAll('input[name="qualificacoes"]:checked'));
-    return checked.map(x => x.value).filter(Boolean);
-  }
-
-  function enforceSingleSelection(changed){
-    // Se marcou um, desmarca todos os outros.
-    if(changed && changed.checked){
-      const all = document.querySelectorAll('input[name="qualificacoes"]');
-      all.forEach(el => { if(el !== changed) el.checked = false; });
-    }
-  }
-
-  function uniq(arr){
-    const out = [];
-    const seen = new Set();
-    for(const x of (arr || [])){
-      const v = (x || '').trim();
-      if(!v) continue;
-      if(seen.has(v)) continue;
-      seen.add(v);
-      out.push(v);
-    }
-    return out;
-  }
-
-  function renderField(label, values){
-    const v = uniq(values);
-    const val = v.length ? v.join(', ') : '-';
-    return `<div class="tcell"><div class="tk">${label}</div><div class="tv">${val}</div></div>`;
-  }
-
-  async function refresh(){
-    const ids = getSelectedIds();
-
-    if(!boxEl || !gridEl || !hintEl){
-      return;
-    }
-
-    if(ids.length === 0){
-      boxEl.style.display = '';
-      hintEl.style.display = '';
-      gridEl.innerHTML = '';
-      return;
-    }
-
-    const qs = new URLSearchParams();
-    qs.set('ids', ids.join(','));
-    if(key) qs.set('key', key);
-
-    try{
-      const resp = await fetch('/api/tratamento_preview?' + qs.toString(), {cache:'no-store'});
-      if(!resp.ok) throw new Error('HTTP ' + resp.status);
-      const j = await resp.json();
-
-      const grav = j.gravidade || [];
-      const prot = j.protocolo || [];
-      const meio = j.meio || [];
-      const org  = j.orgao || [];
-
-      const any = (grav.length || prot.length || meio.length || org.length);
-
-      if(!any){
-        hintEl.style.display = '';
-        gridEl.innerHTML = '';
+      if(!qid){
+        if(emptyEl) emptyEl.style.display = 'block';
+        if(boxEl) boxEl.style.display = 'none';
+        if(gEl) gEl.textContent='';
+        if(pEl) pEl.textContent='';
+        if(mEl) mEl.textContent='';
+        if(oEl) oEl.textContent='';
         return;
       }
 
-      hintEl.style.display = 'none';
-      gridEl.innerHTML = (
-        renderField('Gravidade', grav) +
-        renderField('Protocolo de Tratamento', prot) +
-        renderField('Meio de Acionamento', meio) +
-        renderField('Órgão Acionado', org)
-      );
-    }catch(e){
-      hintEl.style.display = '';
-      gridEl.innerHTML = '';
+      try{
+        const resp = await fetch('/api/tratamento_preview?ids=' + encodeURIComponent(String(qid)), {cache:'no-store'});
+        if(!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        const grav = (data.gravidade && data.gravidade[0]) ? data.gravidade[0] : '';
+        const proto = (data.protocolo_tratamento && data.protocolo_tratamento[0]) ? data.protocolo_tratamento[0] : '';
+        const meio = (data.meio_acionamento && data.meio_acionamento[0]) ? data.meio_acionamento[0] : '';
+        const org  = (data.orgao_acionado && data.orgao_acionado[0]) ? data.orgao_acionado[0] : '';
+
+        if(gEl) gEl.textContent = grav;
+        if(pEl) pEl.textContent = proto;
+        if(mEl) mEl.textContent = meio;
+        if(oEl) oEl.textContent = org;
+
+        if(emptyEl) emptyEl.style.display = 'none';
+        if(boxEl) boxEl.style.display = 'block';
+      }catch(e){
+        if(emptyEl) emptyEl.textContent = 'Falha ao carregar protocolo automático.';
+        if(emptyEl) emptyEl.style.display = 'block';
+        if(boxEl) boxEl.style.display = 'none';
+      }
     }
-  }
 
-  // Bind: muda seleção -> mantém apenas 1 opção marcada e atualiza preview
-  const boxes = document.querySelectorAll('input[name="qualificacoes"]');
-  boxes.forEach(b => {
-    b.addEventListener('change', (ev) => {
-      enforceSingleSelection(ev.target);
-      refresh();
-    });
-  });
+    function bindQualificacao(){
+      const radios = document.querySelectorAll('input[name="qualificacao"]');
+      radios.forEach(r => {
+        r.addEventListener('change', () => updateTratamento(r.value));
+      });
+      const sel = document.querySelector('input[name="qualificacao"]:checked');
+      if(sel) updateTratamento(sel.value);
+      else updateTratamento('');
+    }
 
-  // Render inicial
-  refresh();
-})();;
+    window.addEventListener('DOMContentLoaded', bindQualificacao);
   </script>
-
 </body>
 </html>
 """
+
+# Pré-compila template de confirmação para reduzir alocações por request
 # Pré-compila template de confirmação para reduzir alocações por request
 _CONFIRM_TEMPLATE = app.jinja_env.from_string(CONFIRM_UI_TEMPLATE)
 
@@ -1817,13 +1735,14 @@ def confirmar_ui():
         sup_criancas_idosos = "SIM" if request.form.get("sup_criancas_idosos") else ""
         sup_em_andamento = "SIM" if request.form.get("sup_em_andamento") else ""
 
-        # Qualificações selecionadas (multi-select)
+        # Qualificação selecionada (seleção única)
         qual_ids = []
-        for _v in request.form.getlist("qualificacoes"):
+        _qid = (request.form.get('qualificacao') or '').strip()
+        if _qid:
             try:
-                qual_ids.append(int(_v))
+                qual_ids = [int(_qid)]
             except Exception:
-                pass
+                qual_ids = []
 
         # Regra atual: permitir apenas 1 qualificação (defesa no servidor)
         if len(qual_ids) > 1:
