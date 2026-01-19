@@ -2351,7 +2351,71 @@ TRATAMENTO_EDIT_TEMPLATE = """
         </div>
       </div>
 
-      <div class="card" style="display:flex;justify-content:flex-end;">
+      
+
+      <div class="card">
+        <h2 style="margin:0 0 6px 0;font-size:16px;">Relacionar Qualificação do Incidente &rarr; Tratamento</h2>
+        <div class="muted" style="margin-bottom:10px;">
+          Depois de adicionar/editar itens acima, selecione aqui quais textos (lookup) serão usados automaticamente
+          quando o operador escolher uma <b>Qualificação do incidente</b> na tela de confirmação.
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th style="width:260px;">Qualificação</th>
+              <th>Gravidade</th>
+              <th>Protocolo</th>
+              <th>Meio</th>
+              <th>Órgão</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for q in matriz %}
+            <tr>
+              <td><b>{{ q.nome }}</b><div class="muted">ID {{ q.id }}</div></td>
+              <td>
+                <select name="qt_g_{{ q.id }}">
+                  <option value="">(não alterar)</option>
+                  {% for g in gravidades %}
+                    <option value="{{ g.id }}" {% if q.gravidade_id == g.id %}selected{% endif %}>{{ g.nome }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td>
+                <select name="qt_p_{{ q.id }}">
+                  <option value="">(não alterar)</option>
+                  {% for p in protocolos %}
+                    <option value="{{ p.id }}" {% if q.protocolo_id == p.id %}selected{% endif %}>{{ p.descricao }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td>
+                <select name="qt_m_{{ q.id }}">
+                  <option value="">(não alterar)</option>
+                  {% for m in meios %}
+                    <option value="{{ m.id }}" {% if q.meio_id == m.id %}selected{% endif %}>{{ m.nome }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td>
+                <select name="qt_o_{{ q.id }}">
+                  <option value="">(não alterar)</option>
+                  {% for o in orgaos %}
+                    <option value="{{ o.id }}" {% if q.orgao_id == o.id %}selected{% endif %}>{{ o.nome }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+
+        <div class="row-add" style="justify-content:flex-end;">
+          <button class="btn btn-save" name="action" value="save_matrix" type="submit">Salvar mapeamento</button>
+        </div>
+      </div>
+<div class="card" style="display:flex;justify-content:flex-end;">
         <button class="btn btn-save" name="action" value="save_all" type="submit">Salvar tudo</button>
       </div>
     </form>
@@ -2409,6 +2473,54 @@ def _listar_lookup(table: str, col: str):
         else:
             out.append({"id": int(r[0]), "nome": r[1] or ""})
     return out
+
+
+def _listar_matriz_tratamento_ids():
+    """Retorna lista de dicts com a matriz atual (IDs) por qualificação."""
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT qi.id, qi.nome, "
+            "       qt.gravidade_id, qt.protocolo_id, qt.meio_id, qt.orgao_id "
+            "  FROM qualificacao_incidente qi "
+            "  LEFT JOIN qualificacao_tratamento qt ON qt.qualificacao_id = qi.id "
+            " ORDER BY qi.id"
+        )).fetchall()
+
+    out = []
+    for r in rows:
+        out.append({
+            "id": int(r[0]),
+            "nome": r[1] or "",
+            "gravidade_id": int(r[2]) if r[2] is not None else None,
+            "protocolo_id": int(r[3]) if r[3] is not None else None,
+            "meio_id": int(r[4]) if r[4] is not None else None,
+            "orgao_id": int(r[5]) if r[5] is not None else None,
+        })
+    return out
+
+
+def _ensure_matriz_para_todas_qualificacoes(conn):
+    """Garante que toda qualificação tenha linha na qualificacao_tratamento.
+
+    Importante: isso NÃO sobrescreve nada existente; apenas cria faltantes com os
+    menores IDs disponíveis (fallback seguro).
+    """
+    g = conn.execute(text("SELECT MIN(id) FROM gravidade")).scalar()
+    p = conn.execute(text("SELECT MIN(id) FROM protocolo_tratamento")).scalar()
+    m = conn.execute(text("SELECT MIN(id) FROM meio_acionamento")).scalar()
+    o = conn.execute(text("SELECT MIN(id) FROM orgao_acionado")).scalar()
+    if not (g and p and m and o):
+        return
+
+    conn.execute(text("""
+        INSERT INTO qualificacao_tratamento (qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id)
+        SELECT qi.id, :g, :p, :m, :o
+          FROM qualificacao_incidente qi
+         WHERE NOT EXISTS (
+               SELECT 1 FROM qualificacao_tratamento qt WHERE qt.qualificacao_id = qi.id
+         )
+        ON CONFLICT (qualificacao_id) DO NOTHING
+    """), {"g": int(g), "p": int(p), "m": int(m), "o": int(o)})
 
 @app.route("/tratamentos", methods=["GET", "POST"])
 def tratamentos_ui():
@@ -2485,31 +2597,66 @@ def tratamentos_ui():
                 if nv:
                     _safe_update(conn, "INSERT INTO orgao_acionado (nome) VALUES (:v) ON CONFLICT (nome) DO NOTHING", {"v": nv})
 
-        # Redirect (evita re-POST)
+        
+
+            # Salvar mapeamento Qualificação -> Tratamento
+            if action == "save_matrix":
+                # Garante que exista linha para todas as qualificações (fallback)
+                _ensure_matriz_para_todas_qualificacoes(conn)
+
+                qualificacoes = conn.execute(text("SELECT id FROM qualificacao_incidente ORDER BY id")).fetchall()
+                for (qid,) in qualificacoes:
+                    qid = int(qid)
+                    g = (request.form.get(f"qt_g_{qid}") or "").strip()
+                    p = (request.form.get(f"qt_p_{qid}") or "").strip()
+                    m = (request.form.get(f"qt_m_{qid}") or "").strip()
+                    o = (request.form.get(f"qt_o_{qid}") or "").strip()
+
+                    # Se o usuário deixou "(não alterar)", pula.
+                    if not (g.isdigit() and p.isdigit() and m.isdigit() and o.isdigit()):
+                        continue
+
+                    _safe_update(conn, """
+                        INSERT INTO qualificacao_tratamento (qualificacao_id, gravidade_id, protocolo_id, meio_id, orgao_id)
+                        VALUES (:qid, :g, :p, :m, :o)
+                        ON CONFLICT (qualificacao_id) DO UPDATE SET
+                            gravidade_id = EXCLUDED.gravidade_id,
+                            protocolo_id = EXCLUDED.protocolo_id,
+                            meio_id = EXCLUDED.meio_id,
+                            orgao_id = EXCLUDED.orgao_id
+                    """, {"qid": qid, "g": int(g), "p": int(p), "m": int(m), "o": int(o)})
+# Redirect (evita re-POST)
         if err:
             return _render_trat_edit(
                 key_value=key_value,
                 back_url=back_url,
                 ok=False,
                 err=err,
+                trat_map_json=json.dumps(_listar_tratamento_map(), ensure_ascii=False),
                 gravidades=_listar_lookup("gravidade", "nome"),
                 protocolos=_listar_lookup("protocolo_tratamento", "descricao"),
                 meios=_listar_lookup("meio_acionamento", "nome"),
                 orgaos=_listar_lookup("orgao_acionado", "nome"),
+                matriz=_listar_matriz_tratamento_ids(),
             )
 
         return redirect(url_for("tratamentos_ui", key=key_value, next=back_url, ok="1"))
 
     # GET
+    with engine.begin() as conn:
+        _ensure_matriz_para_todas_qualificacoes(conn)
+
     return _render_trat_edit(
         key_value=key_value,
         back_url=back_url,
         ok=ok,
         err=err,
+        trat_map_json=json.dumps(_listar_tratamento_map(), ensure_ascii=False),
         gravidades=_listar_lookup("gravidade", "nome"),
         protocolos=_listar_lookup("protocolo_tratamento", "descricao"),
         meios=_listar_lookup("meio_acionamento", "nome"),
         orgaos=_listar_lookup("orgao_acionado", "nome"),
+        matriz=_listar_matriz_tratamento_ids(),
     )
 
 
