@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse
 import re
 import hashlib
+import json
 
 from flask import Flask, request, jsonify, url_for, send_file, abort, redirect
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Text
@@ -155,6 +156,37 @@ def _listar_qualificacoes():
         rows = conn.execute(text("SELECT id, nome FROM qualificacao_incidente ORDER BY id")).fetchall()
         return [{"id": int(r[0]), "nome": r[1]} for r in rows]
 
+
+
+def _listar_tratamento_map():
+    # Mapa por qualificacao_id para preenchimento automático no UI.
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT qi.id AS qid, "
+            "       COALESCE(g.nome,'') AS gravidade, "
+            "       COALESCE(p.descricao,'') AS protocolo, "
+            "       COALESCE(m.nome,'') AS meio, "
+            "       COALESCE(o.nome,'') AS orgao "
+            "  FROM qualificacao_incidente qi "
+            "  LEFT JOIN qualificacao_tratamento qt ON qt.qualificacao_id = qi.id "
+            "  LEFT JOIN gravidade g ON g.id = qt.gravidade_id "
+            "  LEFT JOIN protocolo_tratamento p ON p.id = qt.protocolo_id "
+            "  LEFT JOIN meio_acionamento m ON m.id = qt.meio_id "
+            "  LEFT JOIN orgao_acionado o ON o.id = qt.orgao_id "
+            " ORDER BY qi.id"
+        )).fetchall()
+
+    mp = {}
+    for r in rows:
+        # r pode ser tuple ou Row
+        qid = str(r[0])
+        mp[qid] = {
+            "gravidade": r[1] or "",
+            "protocolo": r[2] or "",
+            "meio": r[3] or "",
+            "orgao": r[4] or "",
+        }
+    return mp
 def _qualificacoes_do_evento(evento_id: int):
     with engine.begin() as conn:
         rows = conn.execute(
@@ -531,10 +563,6 @@ def init_db():
     except Exception as _e:
         # não impede subida do serviço se a seed falhar
         print('WARN: seed qualificacoes falhou:', _e)
-    try:
-        _seed_tratamento_tables()
-    except Exception as _e:
-        print('WARN: seed tratamento tabelas falhou:', _e)
     os.makedirs("static", exist_ok=True)
     os.makedirs(os.path.join("static", "ev"), exist_ok=True)
 
@@ -798,6 +826,41 @@ HTML_TEMPLATE = """
       <a href="?filtro={{ filtro }}&data={{ data }}&page={{ page+1 }}">Próxima ▶</a>
     </div>
   </div>
+
+<script>
+  const QUAL_TREAT = {{ trat_map_json|safe }};
+
+  function setTratamento(qid){
+    const g = document.getElementById('t_grav');
+    const m = document.getElementById('t_meio');
+    const o = document.getElementById('t_orgao');
+    const p = document.getElementById('t_proto');
+    if(!g || !m || !o || !p) return;
+
+    if(!qid){
+      g.textContent = '—';
+      m.textContent = '—';
+      o.textContent = '—';
+      p.textContent = '—';
+      return;
+    }
+
+    const t = QUAL_TREAT[String(qid)] || {};
+    g.textContent = t.gravidade || '—';
+    m.textContent = t.meio || '—';
+    o.textContent = t.orgao || '—';
+    p.textContent = t.protocolo || '—';
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll("input[name='qualificacao']").forEach(r => {
+      r.addEventListener('change', () => setTratamento(r.value));
+    });
+    const checked = document.querySelector("input[name='qualificacao']:checked");
+    setTratamento(checked ? checked.value : '');
+  });
+</script>
+
 </body>
 </html>
 """
@@ -1198,40 +1261,76 @@ CONFIRM_UI_TEMPLATE = """
     .imgbox{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#fff;}
     .imgbox img{width:100%;display:block;}
     .imgempty{padding:32px;color:var(--muted);text-align:center;}
-
     .qualbox{margin-top:12px;border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;}
     .qualbox h3{margin:0 0 8px 0;font-size:16px;}
     .qualhint{color:var(--muted);font-size:12px;margin:0 0 8px 0;}
-
-    /* Lista de qualificações (como era antes: texto alinhado e simples) */
-    .qualgrid{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto;padding-right:6px;}
-    .qrow{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#fff;}
-    .qrow input{margin-top:2px;}
-    .qrow span{display:block;line-height:1.2;word-break:break-word;}
+    /* ===== Qualificação (layout melhorado) ===== */
+    .qualGrid{
+      display:grid;
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+      gap:10px;
+      max-height:280px;
+      overflow:auto;
+      padding-right:6px;
+    }
+    
+    .qitem{
+      display:grid;
+      grid-template-columns:20px 1fr;   /* coluna do checkbox + coluna do texto */
+      align-items:start;
+      column-gap:10px;
+      padding:8px 10px;
+      border:1px solid #e5e7eb;
+      border-radius:10px;
+      background:#fff;
+    }
+    
+    .qitem input{
+      margin-top:3px;
+    }
+    
+    .qitem span{
+      display:block;
+      text-align:left;
+      line-height:1.2;
+      word-break:break-word;
+    }
+    
+    /* Responsivo: em telas estreitas, 1 coluna */
+    @media (max-width: 860px){
+      .qualGrid{grid-template-columns:1fr;}
+    }
 
     .meta{display:grid;grid-template-columns:160px 1fr;gap:6px 12px;margin-bottom:10px;}
     .meta .k{color:var(--muted);font-weight:600;}
     .pill{display:inline-block;padding:2px 10px;border-radius:999px;border:1px solid var(--border);font-size:12px;margin-left:6px;background:#fff;}
     .section{border-top:1px solid var(--border);padding-top:12px;margin-top:12px;}
     .label{font-weight:700;margin:0 0 6px 0;}
-
-    /* Importante: não aplicar width:100% em checkbox/radio */
-    input[type="text"], textarea{width:100%;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:14px;box-sizing:border-box;}
+    textarea,input{width:100%;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:14px;box-sizing:border-box;}
     textarea{min-height:120px;resize:vertical;}
-
     .actions{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;}
     .btn{border:0;border-radius:10px;padding:10px 16px;font-weight:700;color:#fff;cursor:pointer;}
     .btn-ok{background:var(--ok);}
     .btn-danger{background:var(--danger);}
     .note{color:var(--muted);font-size:12px;}
+    /* Dados suplementares (lado do Operador) */
+    .opgrid{display:grid;grid-template-columns:260px 1fr;gap:12px;align-items:start;}
+    @media (max-width: 980px){ .opgrid{grid-template-columns:1fr;} }
+    .suppBox{border:1px solid var(--border);border-radius:12px;padding:8px 10px;background:#fff;}
+    .suppBox h4{margin:0 0 6px 0;font-size:14px;}
+    .suppGrid{display:flex;flex-wrap:wrap;gap:14px;align-items:center;}
+    .suppItem{display:flex;gap:8px;align-items:center;margin:0;}
+    .suppItem input[type=checkbox]{width:auto;border:0;padding:0;box-shadow:none;}
+    .suppItem span{line-height:1.1;font-size:13px;}
 
-    /* Caixa de tratamento */
-    .tratamento{margin-top:12px;border-top:1px solid var(--border);padding-top:12px;}
-    .tbox{border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;}
-    .tgrid{display:grid;grid-template-columns:200px 1fr;gap:8px 12px;}
-    @media (max-width: 980px){ .tgrid{grid-template-columns:1fr;} }
-    .tk{color:var(--muted);font-weight:700;}
-    .tv{white-space:pre-wrap;}
+    /* Alias para compatibilidade (template usa .qualgrid) */
+    .qualgrid{display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px;max-height:280px;overflow:auto;padding-right:6px;}
+
+    /* Protocolo de tratamento (automático) */
+    .auto-trat-card{border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;margin-top:12px;}
+    .auto-trat-card h3{margin:0 0 10px 0;font-size:16px;}
+    .auto-trat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;}
+    .auto-trat-proto{border:1px dashed #cfd6e4;border-radius:10px;padding:10px;background:#fafbff;white-space:pre-wrap;}
   </style>
 </head>
 <body>
@@ -1261,10 +1360,14 @@ CONFIRM_UI_TEMPLATE = """
               <h3>Qualificação do incidente</h3>
               <p class="qualhint">Selecione uma opção (opcional).</p>
               <div class="qualgrid">
+                <label class="qitem">
+                  <input type="radio" name="qualificacao" value="" {% if not qual_sel_one %}checked{% endif %}>
+                  <span>Nenhuma (não classificar)</span>
+                </label>
                 {% for q in qualificacoes %}
-                  <label class="qrow">
+                  <label class="qitem">
                     <input type="radio" name="qualificacao" value="{{ q['id'] }}"
-                      {% if q['id'] in qual_sel %}checked{% endif %}>
+                      {% if qual_sel_one == q['id'] %}checked{% endif %}>
                     <span>{{ q['nome'] }}</span>
                   </label>
                 {% endfor %}
@@ -1294,8 +1397,29 @@ CONFIRM_UI_TEMPLATE = """
             </div>
 
             <div class="section">
-              <p class="label">Operador:</p>
-              <input type="text" name="operador" value="{{ ev.confirmado_por or '' }}" placeholder="ex.: op1" />
+              <div class="opgrid">
+                <div>
+                  <p class="label">Operador:</p>
+                  <input name="operador" value="{{ ev.confirmado_por or '' }}" placeholder="ex.: op1" />
+                </div>
+                <div>
+                  <div class="suppBox">
+                    <h4>Dados Suplementares</h4>
+                    <div class="suppGrid"><label class="suppItem">
+                      <input type="checkbox" name="sup_vitimas" value="SIM" {% if ev.vitimas_aparentes == 'SIM' %}checked{% endif %}>
+                      <span>Presença de vítimas aparentes</span>
+                    </label>
+                    <label class="suppItem">
+                      <input type="checkbox" name="sup_criancas_idosos" value="SIM" {% if ev.criancas_ou_idosos == 'SIM' %}checked{% endif %}>
+                      <span>Envolvimento de crianças ou idosos</span>
+                    </label>
+                    <label class="suppItem">
+                      <input type="checkbox" name="sup_em_andamento" value="SIM" {% if ev.em_andamento == 'SIM' %}checked{% endif %}>
+                      <span>Em andamento</span>
+                    </label>
+                  </div></div>
+                </div>
+              </div>
             </div>
 
             <div class="section">
@@ -1309,84 +1433,61 @@ CONFIRM_UI_TEMPLATE = """
               <span class="note">O relato é obrigatório para confirmar.</span>
             </div>
 
-            <div class="tratamento">
-              <p class="label">Protocolo de tratamento (automático)</p>
-              <div id="tratamentoEmpty" class="note">Selecione uma qualificação do incidente para visualizar gravidade, protocolo e acionamentos.</div>
-              <div id="tratamentoBox" class="tbox" style="display:none;">
-                <div class="tgrid">
-                  <div class="tk">Gravidade</div><div class="tv" id="t_grav"></div>
-                  <div class="tk">Protocolo de Tratamento</div><div class="tv" id="t_proto"></div>
-                  <div class="tk">Meio de Acionamento</div><div class="tv" id="t_meio"></div>
-                  <div class="tk">Órgão Acionado</div><div class="tv" id="t_org"></div>
-                </div>
+            <div class="auto-trat-card" id="autoTratCard">
+              <h3>Protocolo de tratamento (automático)</h3>
+              <div class="auto-trat-grid">
+                <div><span class="note">Gravidade:</span> <strong id="t_grav">—</strong></div>
+                <div><span class="note">Meio de acionamento:</span> <strong id="t_meio">—</strong></div>
+                <div><span class="note">Órgão acionado:</span> <strong id="t_orgao">—</strong></div>
+              </div>
+              <div style="margin-top:10px">
+                <span class="note">Protocolo:</span>
+                <div class="auto-trat-proto" id="t_proto">—</div>
               </div>
             </div>
-
           </div>
         </div>
       </form>
     </div>
   </div>
 
-  <script>
-    async function updateTratamento(qid){
-      const emptyEl = document.getElementById('tratamentoEmpty');
-      const boxEl = document.getElementById('tratamentoBox');
-      const gEl = document.getElementById('t_grav');
-      const pEl = document.getElementById('t_proto');
-      const mEl = document.getElementById('t_meio');
-      const oEl = document.getElementById('t_org');
+<script>
+  const QUAL_TREAT = {{ trat_map_json|safe }};
 
-      if(!qid){
-        if(emptyEl) emptyEl.style.display = 'block';
-        if(boxEl) boxEl.style.display = 'none';
-        if(gEl) gEl.textContent='';
-        if(pEl) pEl.textContent='';
-        if(mEl) mEl.textContent='';
-        if(oEl) oEl.textContent='';
-        return;
-      }
+  function setTratamento(qid){
+    const g = document.getElementById('t_grav');
+    const m = document.getElementById('t_meio');
+    const o = document.getElementById('t_orgao');
+    const p = document.getElementById('t_proto');
+    if(!g || !m || !o || !p) return;
 
-      try{
-        const resp = await fetch('/api/tratamento_preview?ids=' + encodeURIComponent(String(qid)), {cache:'no-store'});
-        if(!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        const grav = (data.gravidade && data.gravidade[0]) ? data.gravidade[0] : '';
-        const proto = (data.protocolo_tratamento && data.protocolo_tratamento[0]) ? data.protocolo_tratamento[0] : '';
-        const meio = (data.meio_acionamento && data.meio_acionamento[0]) ? data.meio_acionamento[0] : '';
-        const org  = (data.orgao_acionado && data.orgao_acionado[0]) ? data.orgao_acionado[0] : '';
-
-        if(gEl) gEl.textContent = grav;
-        if(pEl) pEl.textContent = proto;
-        if(mEl) mEl.textContent = meio;
-        if(oEl) oEl.textContent = org;
-
-        if(emptyEl) emptyEl.style.display = 'none';
-        if(boxEl) boxEl.style.display = 'block';
-      }catch(e){
-        if(emptyEl) emptyEl.textContent = 'Falha ao carregar protocolo automático.';
-        if(emptyEl) emptyEl.style.display = 'block';
-        if(boxEl) boxEl.style.display = 'none';
-      }
+    if(!qid){
+      g.textContent = '—';
+      m.textContent = '—';
+      o.textContent = '—';
+      p.textContent = '—';
+      return;
     }
 
-    function bindQualificacao(){
-      const radios = document.querySelectorAll('input[name="qualificacao"]');
-      radios.forEach(r => {
-        r.addEventListener('change', () => updateTratamento(r.value));
-      });
-      const sel = document.querySelector('input[name="qualificacao"]:checked');
-      if(sel) updateTratamento(sel.value);
-      else updateTratamento('');
-    }
+    const t = QUAL_TREAT[String(qid)] || {};
+    g.textContent = t.gravidade || '—';
+    m.textContent = t.meio || '—';
+    o.textContent = t.orgao || '—';
+    p.textContent = t.protocolo || '—';
+  }
 
-    window.addEventListener('DOMContentLoaded', bindQualificacao);
-  </script>
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll("input[name='qualificacao']").forEach(r => {
+      r.addEventListener('change', () => setTratamento(r.value));
+    });
+    const checked = document.querySelector("input[name='qualificacao']:checked");
+    setTratamento(checked ? checked.value : '');
+  });
+</script>
+
 </body>
 </html>
 """
-
-# Pré-compila template de confirmação para reduzir alocações por request
 # Pré-compila template de confirmação para reduzir alocações por request
 _CONFIRM_TEMPLATE = app.jinja_env.from_string(CONFIRM_UI_TEMPLATE)
 
@@ -1735,18 +1836,11 @@ def confirmar_ui():
         sup_criancas_idosos = "SIM" if request.form.get("sup_criancas_idosos") else ""
         sup_em_andamento = "SIM" if request.form.get("sup_em_andamento") else ""
 
-        # Qualificação selecionada (seleção única)
+        # Qualificação selecionada (escolha única)
         qual_ids = []
-        _qid = (request.form.get('qualificacao') or '').strip()
-        if _qid:
-            try:
-                qual_ids = [int(_qid)]
-            except Exception:
-                qual_ids = []
-
-        # Regra atual: permitir apenas 1 qualificação (defesa no servidor)
-        if len(qual_ids) > 1:
-            qual_ids = qual_ids[:1]
+        q_raw = (request.form.get('qualificacao') or '').strip()
+        if q_raw.isdigit():
+            qual_ids = [int(q_raw)]
 
         if ev_id <= 0:
             return "ID inválido.", 400
@@ -1933,13 +2027,16 @@ def confirmar_ui():
 
     qualificacoes = _listar_qualificacoes()
     qual_sel = _qualificacoes_do_evento(ev["id"]) if ev and ev.get("id") else set()
-    # Regra atual: permitir apenas 1 qualificação selecionada
-    if isinstance(qual_sel, (set, list, tuple)):
+
+    # UI usa escolha única; se existir múltiplas no BD, usa a menor (mais antiga)
+    qual_sel_one = None
+    if qual_sel:
         try:
-            _qs = sorted(list(qual_sel))
-            qual_sel = set(_qs[:1]) if _qs else set()
+            qual_sel_one = sorted(list(qual_sel))[0]
         except Exception:
-            pass
+            qual_sel_one = None
+
+    trat_map_json = json.dumps(_listar_tratamento_map(), ensure_ascii=False)
 
     return _render_confirm(
         ev=ev,
@@ -1948,6 +2045,8 @@ def confirmar_ui():
         key_value=key_value,
         qualificacoes=qualificacoes,
         qual_sel=qual_sel,
+        qual_sel_one=qual_sel_one,
+        trat_map_json=trat_map_json,
     )
 
 
@@ -2070,51 +2169,6 @@ def api_desconfirmar():
             {"id": ev_id}
         )
     return jsonify({"ok": True})
-
-
-@app.route("/api/tratamento_preview", methods=["GET"])
-def api_tratamento_preview():
-    """Retorna gravidade/protocolo/meio/órgão a partir das qualificações selecionadas.
-    Usado pela UI /confirmar para mostrar o protocolo imediatamente ao marcar checkboxes.
-    """
-    if not _admin_ok():
-        abort(403)
-
-    ids_raw = (request.args.get("ids") or "").strip()
-    ids = []
-    for part in ids_raw.replace(";", ",").split(","):
-        part = (part or "").strip()
-        if part.isdigit():
-            ids.append(int(part))
-
-    if not ids:
-        return jsonify({"ok": True, "gravidade": [], "protocolo": [], "meio": [], "orgao": []})
-
-    from sqlalchemy import bindparam
-    stmt = text("""
-        SELECT DISTINCT
-               g.nome        AS gravidade,
-               p.descricao   AS protocolo,
-               m.nome        AS meio,
-               o.nome        AS orgao
-          FROM qualificacao_tratamento qt
-          JOIN gravidade g             ON g.id = qt.gravidade_id
-          JOIN protocolo_tratamento p  ON p.id = qt.protocolo_id
-          JOIN meio_acionamento m      ON m.id = qt.meio_id
-          JOIN orgao_acionado o        ON o.id = qt.orgao_id
-         WHERE qt.qualificacao_id IN :ids
-    """).bindparams(bindparam("ids", expanding=True))
-
-    grav, prot, meio, org = [], [], [], []
-    with engine.begin() as conn:
-        rows = conn.execute(stmt, {"ids": ids}).fetchall()
-        for r in rows:
-            grav.append(r[0])
-            prot.append(r[1])
-            meio.append(r[2])
-            org.append(r[3])
-
-    return jsonify({"ok": True, "gravidade": grav, "protocolo": prot, "meio": meio, "orgao": org})
 
 
 # -------------------- UI: editar textos de tratamento (lookup) --------------------
@@ -2246,6 +2300,41 @@ TRATAMENTO_EDIT_TEMPLATE = """
       </div>
     </form>
   </div>
+
+<script>
+  const QUAL_TREAT = {{ trat_map_json|safe }};
+
+  function setTratamento(qid){
+    const g = document.getElementById('t_grav');
+    const m = document.getElementById('t_meio');
+    const o = document.getElementById('t_orgao');
+    const p = document.getElementById('t_proto');
+    if(!g || !m || !o || !p) return;
+
+    if(!qid){
+      g.textContent = '—';
+      m.textContent = '—';
+      o.textContent = '—';
+      p.textContent = '—';
+      return;
+    }
+
+    const t = QUAL_TREAT[String(qid)] || {};
+    g.textContent = t.gravidade || '—';
+    m.textContent = t.meio || '—';
+    o.textContent = t.orgao || '—';
+    p.textContent = t.protocolo || '—';
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll("input[name='qualificacao']").forEach(r => {
+      r.addEventListener('change', () => setTratamento(r.value));
+    });
+    const checked = document.querySelector("input[name='qualificacao']:checked");
+    setTratamento(checked ? checked.value : '');
+  });
+</script>
+
 </body>
 </html>
 """
