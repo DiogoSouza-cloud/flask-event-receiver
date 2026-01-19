@@ -1323,8 +1323,64 @@ CONFIRM_UI_TEMPLATE = """
     .suppItem input[type=checkbox]{width:auto;border:0;padding:0;box-shadow:none;}
     .suppItem span{line-height:1.1;font-size:13px;}
 
-    /* Alias para compatibilidade (template usa .qualgrid) */
-    .qualgrid{display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px;max-height:280px;overflow:auto;padding-right:6px;}
+    /* Qualificação do incidente (lista estilo checkbox, mas com radio) */
+    .qualgrid{
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+      max-height:340px;
+      overflow:auto;
+      padding-right:6px;
+    }
+
+    .qitem{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      padding:10px 12px;
+      border:1px solid #e5e7eb;
+      border-radius:10px;
+      background:#fff;
+    }
+
+    .qitem input[type=radio]{
+      -webkit-appearance:none;
+      appearance:none;
+      width:16px;
+      height:16px;
+      border:2px solid #9ca3af;
+      border-radius:4px;
+      display:inline-grid;
+      place-content:center;
+      margin:0;
+      flex:0 0 auto;
+    }
+
+    .qitem input[type=radio]::before{
+      content:"";
+      width:10px;
+      height:10px;
+      transform:scale(0);
+      transition:transform 120ms ease-in-out;
+      background:#2563eb;
+      border-radius:2px;
+    }
+
+    .qitem input[type=radio]:checked{
+      border-color:#2563eb;
+    }
+
+    .qitem input[type=radio]:checked::before{
+      transform:scale(1);
+    }
+
+    .qitem span{
+      display:block;
+      text-align:left;
+      line-height:1.2;
+      word-break:break-word;
+      font-size:14px;
+    }
 
     /* Protocolo de tratamento (automático) */
     .auto-trat-card{border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;margin-top:12px;}
