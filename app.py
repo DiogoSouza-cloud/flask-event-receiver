@@ -531,6 +531,10 @@ def init_db():
     except Exception as _e:
         # não impede subida do serviço se a seed falhar
         print('WARN: seed qualificacoes falhou:', _e)
+    try:
+        _seed_tratamento_tables()
+    except Exception as _e:
+        print('WARN: seed tratamento tabelas falhou:', _e)
     os.makedirs("static", exist_ok=True)
     os.makedirs(os.path.join("static", "ev"), exist_ok=True)
 
@@ -1199,50 +1203,27 @@ CONFIRM_UI_TEMPLATE = """
     .qualhint{color:var(--muted);font-size:12px;margin:0 0 8px 0;}
     /* ===== Qualificação (layout melhorado) ===== */
 
-    /* Alias: manter compatibilidade com class="qualgrid" */
-    .qualgrid{
-      display:grid;
-      grid-template-columns:repeat(2, minmax(0, 1fr));
-      gap:10px;
+    /* Alias: manter compatibilidade com class="qualList" id="qualList" */
+    .qualbox{margin-top:12px;border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;}
+    .qualbox h3{margin:0 0 8px 0;font-size:16px;}
+    .qualhint{color:var(--muted);font-size:12px;margin:0 0 8px 0;}
+
+    /* ===== Qualificação (lista simples como antes) ===== */
+    .qualList{
       max-height:280px;
       overflow:auto;
       padding-right:6px;
     }
-    .qualGrid{
-      display:grid;
-      grid-template-columns:repeat(2, minmax(0, 1fr));
+    .qrow{
+      display:flex;
+      align-items:flex-start;
       gap:10px;
-      max-height:280px;
-      overflow:auto;
-      padding-right:6px;
-    }
-    
-    .qitem{
-      display:grid;
-      grid-template-columns:20px 1fr;   /* coluna do checkbox + coluna do texto */
-      align-items:start;
-      column-gap:10px;
-      padding:8px 10px;
-      border:1px solid #e5e7eb;
+      padding:6px 6px;
       border-radius:10px;
-      background:#fff;
     }
-    
-    .qitem input{
-      margin-top:3px;
-    }
-    
-    .qitem span{
-      display:block;
-      text-align:left;
-      line-height:1.2;
-      word-break:break-word;
-    }
-    
-    /* Responsivo: em telas estreitas, 1 coluna */
-    @media (max-width: 860px){
-      .qualGrid{grid-template-columns:1fr;}
-    }
+    .qrow:hover{background:#f8fafc;}
+    .qrow input{margin-top:2px;}
+    .qrow span{display:block;line-height:1.25;word-break:break-word;}
 
     .meta{display:grid;grid-template-columns:160px 1fr;gap:6px 12px;margin-bottom:10px;}
     .meta .k{color:var(--muted);font-weight:600;}
@@ -1293,9 +1274,9 @@ CONFIRM_UI_TEMPLATE = """
             <div class="qualbox">
               <h3>Qualificação do incidente</h3>
               <p class="qualhint">Selecione uma ou mais opções (opcional).</p>
-              <div class="qualgrid">
+              <div class="qualList" id="qualList">
                 {% for q in qualificacoes %}
-                  <label class="qitem">
+                  <label class="qrow">
                     <input type="checkbox" name="qualificacoes" value="{{ q['id'] }}"
                       {% if q['id'] in qual_sel %}checked{% endif %}>
                     <span>{{ q['nome'] }}</span>
@@ -1384,61 +1365,105 @@ CONFIRM_UI_TEMPLATE = """
 
   <script>
     (function(){
-      const key = "{{ key_value }}";
-      const emptyEl = document.getElementById('tratamentoEmpty');
-      const boxEl = document.getElementById('tratamentoBox');
-      const gEl = document.getElementById('t_grav');
-      const pEl = document.getElementById('t_prot');
-      const mEl = document.getElementById('t_meio');
-      const oEl = document.getElementById('t_org');
+  const key = {{ key_value|tojson }};
 
-      function uniq(arr){
-        const s = new Set();
-        (arr||[]).forEach(v=>{ if(v && String(v).trim()) s.add(String(v).trim()); });
-        return Array.from(s);
+  const boxEl = document.getElementById('tratamentoBox');
+  const hintEl = document.getElementById('tratamentoHint');
+  const gridEl = document.getElementById('tratamentoGrid');
+
+  function getSelectedIds(){
+    const checked = Array.from(document.querySelectorAll('input[name="qualificacoes"]:checked'));
+    return checked.map(x => x.value).filter(Boolean);
+  }
+
+  function enforceSingleSelection(changed){
+    // Se marcou um, desmarca todos os outros.
+    if(changed && changed.checked){
+      const all = document.querySelectorAll('input[name="qualificacoes"]');
+      all.forEach(el => { if(el !== changed) el.checked = false; });
+    }
+  }
+
+  function uniq(arr){
+    const out = [];
+    const seen = new Set();
+    for(const x of (arr || [])){
+      const v = (x || '').trim();
+      if(!v) continue;
+      if(seen.has(v)) continue;
+      seen.add(v);
+      out.push(v);
+    }
+    return out;
+  }
+
+  function renderField(label, values){
+    const v = uniq(values);
+    const val = v.length ? v.join(', ') : '-';
+    return `<div class="tcell"><div class="tk">${label}</div><div class="tv">${val}</div></div>`;
+  }
+
+  async function refresh(){
+    const ids = getSelectedIds();
+
+    if(!boxEl || !gridEl || !hintEl){
+      return;
+    }
+
+    if(ids.length === 0){
+      boxEl.style.display = '';
+      hintEl.style.display = '';
+      gridEl.innerHTML = '';
+      return;
+    }
+
+    const qs = new URLSearchParams();
+    qs.set('ids', ids.join(','));
+    if(key) qs.set('key', key);
+
+    try{
+      const resp = await fetch('/api/tratamento_preview?' + qs.toString(), {cache:'no-store'});
+      if(!resp.ok) throw new Error('HTTP ' + resp.status);
+      const j = await resp.json();
+
+      const grav = j.gravidade || [];
+      const prot = j.protocolo || [];
+      const meio = j.meio || [];
+      const org  = j.orgao || [];
+
+      const any = (grav.length || prot.length || meio.length || org.length);
+
+      if(!any){
+        hintEl.style.display = '';
+        gridEl.innerHTML = '';
+        return;
       }
 
-      async function refresh(){
-        const ids = Array.from(document.querySelectorAll('input[name="qualificacoes"]:checked')).map(cb=>cb.value);
-        if(!ids.length){
-          boxEl.style.display='none';
-          emptyEl.style.display='block';
-          gEl.textContent='-'; pEl.textContent='-'; mEl.textContent='-'; oEl.textContent='-';
-          return;
-        }
-        try{
-          const qs = new URLSearchParams();
-          if(key) qs.set('key', key);
-          qs.set('ids', ids.join(','));
-          const r = await fetch('/api/tratamento_preview?' + qs.toString(), {cache:'no-store'});
-          if(!r.ok) throw new Error('HTTP ' + r.status);
-          const data = await r.json();
-          const grav = uniq(data.gravidade);
-          const prot = uniq(data.protocolo);
-          const meio = uniq(data.meio);
-          const org  = uniq(data.orgao);
+      hintEl.style.display = 'none';
+      gridEl.innerHTML = (
+        renderField('Gravidade', grav) +
+        renderField('Protocolo de Tratamento', prot) +
+        renderField('Meio de Acionamento', meio) +
+        renderField('Órgão Acionado', org)
+      );
+    }catch(e){
+      hintEl.style.display = '';
+      gridEl.innerHTML = '';
+    }
+  }
 
-          gEl.textContent = grav.length ? grav.join(', ') : '-';
-          pEl.textContent = prot.length ? prot.join('\n\n') : '-';
-          mEl.textContent = meio.length ? meio.join(', ') : '-';
-          oEl.textContent = org.length ? org.join(', ') : '-';
-
-          emptyEl.style.display='none';
-          boxEl.style.display='block';
-        }catch(e){
-          // se falhar, apenas mostra aviso simples
-          emptyEl.textContent = 'Não foi possível carregar o protocolo automaticamente (verifique a API /api/tratamento_preview).';
-          boxEl.style.display='none';
-          emptyEl.style.display='block';
-        }
-      }
-
-      document.querySelectorAll('input[name="qualificacoes"]').forEach(cb=>{
-        cb.addEventListener('change', refresh);
-      });
-      // primeira renderização
+  // Bind: muda seleção -> mantém apenas 1 opção marcada e atualiza preview
+  const boxes = document.querySelectorAll('input[name="qualificacoes"]');
+  boxes.forEach(b => {
+    b.addEventListener('change', (ev) => {
+      enforceSingleSelection(ev.target);
       refresh();
-    })();
+    });
+  });
+
+  // Render inicial
+  refresh();
+})();;
   </script>
 
 </body>
@@ -1800,6 +1825,10 @@ def confirmar_ui():
             except Exception:
                 pass
 
+        # Regra atual: permitir apenas 1 qualificação (defesa no servidor)
+        if len(qual_ids) > 1:
+            qual_ids = qual_ids[:1]
+
         if ev_id <= 0:
             return "ID inválido.", 400
 
@@ -1985,6 +2014,13 @@ def confirmar_ui():
 
     qualificacoes = _listar_qualificacoes()
     qual_sel = _qualificacoes_do_evento(ev["id"]) if ev and ev.get("id") else set()
+        # Regra atual: permitir apenas 1 qualificação selecionada
+        if isinstance(qual_sel, (set, list, tuple)):
+            try:
+                _qs = sorted(list(qual_sel))
+                qual_sel = set(_qs[:1]) if _qs else set()
+            except Exception:
+                pass
 
     return _render_confirm(
         ev=ev,
