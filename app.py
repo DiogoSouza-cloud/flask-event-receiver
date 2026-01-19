@@ -1198,6 +1198,16 @@ CONFIRM_UI_TEMPLATE = """
     .qualbox h3{margin:0 0 8px 0;font-size:16px;}
     .qualhint{color:var(--muted);font-size:12px;margin:0 0 8px 0;}
     /* ===== Qualificação (layout melhorado) ===== */
+
+    /* Alias: manter compatibilidade com class="qualgrid" */
+    .qualgrid{
+      display:grid;
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+      gap:10px;
+      max-height:280px;
+      overflow:auto;
+      padding-right:6px;
+    }
     .qualGrid{
       display:grid;
       grid-template-columns:repeat(2, minmax(0, 1fr));
@@ -1351,12 +1361,86 @@ CONFIRM_UI_TEMPLATE = """
               <button class="btn btn-ok" name="action" value="confirmar" type="submit">Confirmar</button>
               <button class="btn btn-danger" name="action" value="desconfirmar" type="submit">Desfazer</button>
               <span class="note">O relato é obrigatório para confirmar.</span>
+            
+
+            <div class="section" id="tratamentoSection">
+              <p class="label">Protocolo de tratamento (automático)</p>
+              <div id="tratamentoEmpty" class="note">Selecione uma qualificação do incidente para visualizar gravidade, protocolo e acionamentos.</div>
+              <div id="tratamentoBox" style="display:none; margin-top:8px; border:1px solid var(--border); border-radius:12px; padding:12px; background:#fff;">
+                <div class="meta" style="grid-template-columns:190px 1fr; margin-bottom:0;">
+                  <div class="k">Gravidade:</div><div id="t_grav">-</div>
+                  <div class="k">Protocolo de Tratamento:</div><div id="t_prot" style="white-space:pre-wrap">-</div>
+                  <div class="k">Meio de Acionamento:</div><div id="t_meio">-</div>
+                  <div class="k">Órgão Acionado:</div><div id="t_org">-</div>
+                </div>
+              </div>
             </div>
+</div>
           </div>
         </div>
       </form>
     </div>
   </div>
+
+  <script>
+    (function(){
+      const key = "{{ key_value }}";
+      const emptyEl = document.getElementById('tratamentoEmpty');
+      const boxEl = document.getElementById('tratamentoBox');
+      const gEl = document.getElementById('t_grav');
+      const pEl = document.getElementById('t_prot');
+      const mEl = document.getElementById('t_meio');
+      const oEl = document.getElementById('t_org');
+
+      function uniq(arr){
+        const s = new Set();
+        (arr||[]).forEach(v=>{ if(v && String(v).trim()) s.add(String(v).trim()); });
+        return Array.from(s);
+      }
+
+      async function refresh(){
+        const ids = Array.from(document.querySelectorAll('input[name="qualificacoes"]:checked')).map(cb=>cb.value);
+        if(!ids.length){
+          boxEl.style.display='none';
+          emptyEl.style.display='block';
+          gEl.textContent='-'; pEl.textContent='-'; mEl.textContent='-'; oEl.textContent='-';
+          return;
+        }
+        try{
+          const qs = new URLSearchParams();
+          if(key) qs.set('key', key);
+          qs.set('ids', ids.join(','));
+          const r = await fetch('/api/tratamento_preview?' + qs.toString(), {cache:'no-store'});
+          if(!r.ok) throw new Error('HTTP ' + r.status);
+          const data = await r.json();
+          const grav = uniq(data.gravidade);
+          const prot = uniq(data.protocolo);
+          const meio = uniq(data.meio);
+          const org  = uniq(data.orgao);
+
+          gEl.textContent = grav.length ? grav.join(', ') : '-';
+          pEl.textContent = prot.length ? prot.join('\n\n') : '-';
+          mEl.textContent = meio.length ? meio.join(', ') : '-';
+          oEl.textContent = org.length ? org.join(', ') : '-';
+
+          emptyEl.style.display='none';
+          boxEl.style.display='block';
+        }catch(e){
+          // se falhar, apenas mostra aviso simples
+          emptyEl.textContent = 'Não foi possível carregar o protocolo automaticamente (verifique a API /api/tratamento_preview).';
+          boxEl.style.display='none';
+          emptyEl.style.display='block';
+        }
+      }
+
+      document.querySelectorAll('input[name="qualificacoes"]').forEach(cb=>{
+        cb.addEventListener('change', refresh);
+      });
+      // primeira renderização
+      refresh();
+    })();
+  </script>
+
 </body>
 </html>
 """
@@ -2031,6 +2115,51 @@ def api_desconfirmar():
             {"id": ev_id}
         )
     return jsonify({"ok": True})
+
+
+@app.route("/api/tratamento_preview", methods=["GET"])
+def api_tratamento_preview():
+    """Retorna gravidade/protocolo/meio/órgão a partir das qualificações selecionadas.
+    Usado pela UI /confirmar para mostrar o protocolo imediatamente ao marcar checkboxes.
+    """
+    if not _admin_ok():
+        abort(403)
+
+    ids_raw = (request.args.get("ids") or "").strip()
+    ids = []
+    for part in ids_raw.replace(";", ",").split(","):
+        part = (part or "").strip()
+        if part.isdigit():
+            ids.append(int(part))
+
+    if not ids:
+        return jsonify({"ok": True, "gravidade": [], "protocolo": [], "meio": [], "orgao": []})
+
+    from sqlalchemy import bindparam
+    stmt = text("""
+        SELECT DISTINCT
+               g.nome        AS gravidade,
+               p.descricao   AS protocolo,
+               m.nome        AS meio,
+               o.nome        AS orgao
+          FROM qualificacao_tratamento qt
+          JOIN gravidade g             ON g.id = qt.gravidade_id
+          JOIN protocolo_tratamento p  ON p.id = qt.protocolo_id
+          JOIN meio_acionamento m      ON m.id = qt.meio_id
+          JOIN orgao_acionado o        ON o.id = qt.orgao_id
+         WHERE qt.qualificacao_id IN :ids
+    """).bindparams(bindparam("ids", expanding=True))
+
+    grav, prot, meio, org = [], [], [], []
+    with engine.begin() as conn:
+        rows = conn.execute(stmt, {"ids": ids}).fetchall()
+        for r in rows:
+            grav.append(r[0])
+            prot.append(r[1])
+            meio.append(r[2])
+            org.append(r[3])
+
+    return jsonify({"ok": True, "gravidade": grav, "protocolo": prot, "meio": meio, "orgao": org})
 
 
 # -------------------- UI: editar textos de tratamento (lookup) --------------------
