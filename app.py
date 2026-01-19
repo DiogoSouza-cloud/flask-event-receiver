@@ -2014,13 +2014,13 @@ def confirmar_ui():
 
     qualificacoes = _listar_qualificacoes()
     qual_sel = _qualificacoes_do_evento(ev["id"]) if ev and ev.get("id") else set()
-        # Regra atual: permitir apenas 1 qualificação selecionada
-        if isinstance(qual_sel, (set, list, tuple)):
-            try:
-                _qs = sorted(list(qual_sel))
-                qual_sel = set(_qs[:1]) if _qs else set()
-            except Exception:
-                pass
+    # Regra atual: permitir apenas 1 qualificação selecionada
+    if isinstance(qual_sel, (set, list, tuple)):
+        try:
+            _qs = sorted(list(qual_sel))
+            qual_sel = set(_qs[:1]) if _qs else set()
+        except Exception:
+            pass
 
     return _render_confirm(
         ev=ev,
