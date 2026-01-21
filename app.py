@@ -131,42 +131,48 @@ evento_qualificacao_tb = Table(
 )
 
 def _seed_qualificacoes():
-    """Cria as tabelas necessárias e faz seed inicial das qualificações.
+    """Seed das qualificações fixas.
 
-    Observação:
-      - Para permitir criar/deletar qualificações via UI, o seed só acontece se a tabela estiver vazia,
-        evitando "recriar" itens removidos em reinícios.
-      - Para forçar o seed mesmo com dados existentes, defina env FORCE_SEED_QUALIFICACOES=1.
+    Regra:
+      - Por padrão: só popula se a tabela estiver vazia (não recria itens deletados).
+      - Se FORCE_SEED_QUALIFICACOES=1: garante presença das qualificações fixas (sem apagar as existentes).
     """
+    force = str(os.environ.get("FORCE_SEED_QUALIFICACOES", "")).strip().lower() in ("1", "true", "yes", "y")
+
     with engine.begin() as conn:
-        # cria tabelas (caso ainda não existam)
+        # garante tabelas base (caso ainda não existam)
         md.create_all(engine)
-        # cria/popula matriz de tratamento (tabelas + mapeamento fixo)
+
+        # garante tabelas da matriz de tratamento (e seed do mapeamento base)
         _ensure_tratamento_tables_and_seed(conn)
 
-        try:
-            total = int(conn.execute(text("SELECT COUNT(*) FROM qualificacao_incidente")).scalar() or 0)
-        except Exception:
-            total = 0
+        total = conn.execute(text("SELECT COUNT(1) FROM qualificacao_incidente")).scalar() or 0
+        if total > 0 and not force:
+            return
 
-        force = (os.getenv("FORCE_SEED_QUALIFICACOES", "") or "").strip() == "1"
-        if force or total == 0:
-            # insere todos os valores fixos (seed inicial)
-            if QUALIFICACOES_FIXAS:
-                conn.execute(
-                    text(
-                        "INSERT INTO qualificacao_incidente (nome) VALUES "
-                        + ",".join([f"(:n{i})" for i in range(len(QUALIFICACOES_FIXAS))])
-                        + " ON CONFLICT (nome) DO NOTHING"
-                    ),
-                    {f"n{i}": QUALIFICACOES_FIXAS[i] for i in range(len(QUALIFICACOES_FIXAS))}
-                )
-
-        # garante que existe mapeamento default na matriz para todas as qualificações presentes
-        _ensure_matriz_para_todas_qualificacoes(conn)
+        # insere sem duplicar
+        for nome in QUALIFICACOES_FIXAS:
+            nm = (nome or "").strip()
+            if not nm:
+                continue
+            # SQLite: INSERT OR IGNORE evita erro de UNIQUE
+            conn.execute(text("INSERT OR IGNORE INTO qualificacao_incidente (nome) VALUES (:n)"), {"n": nm})
 
 
+        # busca existentes
+        existentes = {
+            (r[0] or "").strip()
+            for r in conn.execute(text("SELECT nome FROM qualificacao_incidente")).fetchall()
+        }
 
+        faltantes = [q for q in QUALIFICACOES_FIXAS if q not in existentes]
+        if faltantes:
+            conn.execute(
+                text("INSERT INTO qualificacao_incidente (nome) VALUES " + ",".join(["(:n%d)" % i for i in range(len(faltantes))])),
+                {f"n{i}": faltantes[i] for i in range(len(faltantes))}
+            )
+
+def _listar_qualificacoes():
     with engine.begin() as conn:
         rows = conn.execute(text("SELECT id, nome FROM qualificacao_incidente ORDER BY id")).fetchall()
         return [{"id": int(r[0]), "nome": r[1]} for r in rows]
@@ -1013,7 +1019,7 @@ def _close_window_html(next_url: str, message: str = "Registro atualizado. Você
     try {{ if (window.opener && window.opener.location) window.opener.location.reload(); }} catch(e) {{}}
     try {{ window.close(); }} catch(e) {{}}
     setTimeout(function() {{ try {{ window.close(); }} catch(e) {{}} }}, 250);
-    setTimeout(function() {{ window.location.href = "{nxt}"; }}, 800);
+    setTimeout(function() {{ window.location.href = \"{nxt}\"; }}, 800);
   </script>
 </body></html>"""
 
@@ -1267,7 +1273,6 @@ CONFIRM_UI_TEMPLATE = """
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif;margin:0;background:var(--bg);color:var(--text);}
     .wrap{max-width:1200px;margin:24px auto;padding:0 16px;}
     .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
-    .top-actions{display:flex;gap:10px;align-items:center;}
     h1{font-size:28px;margin:0;}
     a{color:#2563eb;text-decoration:none;}
     .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 10px rgba(0,0,0,.05);padding:16px;}
@@ -2256,7 +2261,6 @@ TRATAMENTO_EDIT_TEMPLATE = """
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;margin:0;background:var(--bg);color:var(--text);}
     .wrap{max-width:1100px;margin:22px auto;padding:0 16px;}
     .top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;}
-    .top-actions{display:flex;gap:10px;align-items:center;}
     h1{font-size:22px;margin:0;color:var(--brand);}
     a{color:#2563eb;text-decoration:none;}
     .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 10px rgba(0,0,0,.05);padding:14px;margin:14px 0;}
@@ -2277,10 +2281,8 @@ TRATAMENTO_EDIT_TEMPLATE = """
   <div class="wrap">
     <div class="top">
       <h1>Editar textos de tratamento (lookup)</h1>
-      <div class="top-actions">
-        <a href="{{ qual_manage_url }}">Qualificações</a>
+      <a href="{{ qual_url }}">Qualificações</a>
         <a href="{{ back_url }}">Voltar</a>
-      </div>
     </div>
 
     {% if ok %}
@@ -2543,8 +2545,9 @@ def _ensure_matriz_para_todas_qualificacoes(conn):
     """), {"g": int(g), "p": int(p), "m": int(m), "o": int(o)})
 
 
-
-# -------------------- UI: criar/deletar Qualificações do Incidente --------------------
+# =========================
+# Qualificações do Incidente (CRUD simples)
+# =========================
 QUALIFICACOES_UI_TEMPLATE = """
 <!doctype html>
 <html lang="pt-br">
@@ -2553,79 +2556,83 @@ QUALIFICACOES_UI_TEMPLATE = """
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Qualificações do Incidente</title>
   <style>
-    :root { --bg:#f6f7fb; --card:#fff; --text:#111827; --muted:#6b7280; --border:#e5e7eb; --brand:#111827; --danger:#b91c1c; }
+    :root { --bg:#f6f7fb; --card:#fff; --text:#111827; --muted:#6b7280; --border:#e5e7eb; }
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;margin:0;background:var(--bg);color:var(--text);}
-    a{color:#2563eb;text-decoration:none;font-weight:700}
-    .wrap{max-width:1100px;margin:0 auto;padding:18px}
-    .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-    .top h1{margin:0;font-size:20px}
-    .top-actions{display:flex;gap:10px;align-items:center}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;margin-top:12px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
-    table{width:100%;border-collapse:collapse}
-    th,td{padding:10px;border-bottom:1px solid var(--border);text-align:left;font-size:14px;vertical-align:middle}
-    th{color:var(--muted);font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
-    input[type=text]{border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:14px;min-width:320px}
-    .row-add{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-    .btn{border:0;border-radius:10px;padding:10px 14px;font-weight:800;cursor:pointer}
+    .wrap{max-width:1100px;margin:22px auto;padding:0 16px;}
+    .top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;}
+    h1{font-size:20px;margin:0;}
+    a{color:#2563eb;text-decoration:none;}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 10px rgba(0,0,0,.05);padding:14px;margin:14px 0;}
+    .grid{display:grid;grid-template-columns: 1fr auto;gap:10px;align-items:end;}
+    input[type="text"]{width:100%;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:14px;box-sizing:border-box;}
+    table{width:100%;border-collapse:collapse;}
+    th,td{border-bottom:1px solid var(--border);padding:10px 8px;text-align:left;vertical-align:top;}
+    th{font-size:12px;color:var(--muted);font-weight:700;}
+    .btn{border:0;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer;}
     .btn-add{background:#2563eb;color:#fff;}
-    .btn-del{background:var(--danger);color:#fff;}
+    .btn-del{background:#ef4444;color:#fff;}
     .ok{background:#dcfce7;border:1px solid #bbf7d0;color:#166534;padding:10px 12px;border-radius:12px;margin:12px 0;}
     .err{background:#fee2e2;border:1px solid #fecaca;color:#991b1b;padding:10px 12px;border-radius:12px;margin:12px 0;}
-    .muted{color:var(--muted)}
+    .muted{color:var(--muted);font-size:12px;}
+    form{margin:0;}
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="top">
-      <h1>Qualificações do Incidente</h1>
-      <div class="top-actions">
+      <h1>Qualificações do incidente</h1>
+      <div style="display:flex;gap:14px;align-items:center;">
         <a href="{{ back_url }}">Voltar</a>
       </div>
     </div>
 
-    {% if ok %}
-      <div class="ok">{{ ok_msg }}</div>
-    {% endif %}
-    {% if err %}
-      <div class="err">{{ err }}</div>
-    {% endif %}
+    <div class="card">
+      <div class="muted">
+        Crie e remova qualificações. Ao remover, o mapeamento de tratamento e vínculos de eventos serão removidos.
+      </div>
+    </div>
+
+    {% if ok %}<div class="ok">{{ ok }}</div>{% endif %}
+    {% if err %}<div class="err">{{ err }}</div>{% endif %}
 
     <div class="card">
-      <h3 style="margin:0 0 10px 0;">Criar nova qualificação</h3>
-      <form method="post" class="row-add">
+      <h3 style="margin:0 0 10px 0;">Adicionar nova qualificação</h3>
+      <form method="post">
         <input type="hidden" name="key" value="{{ key_value }}">
         <input type="hidden" name="next" value="{{ back_url }}">
-        <input type="hidden" name="action" value="add">
-        <input type="text" name="nome" placeholder="Ex.: Ameaça com faca" />
-        <button class="btn btn-add" type="submit">Adicionar</button>
-        <span class="muted">Após adicionar, o mapeamento padrão é criado automaticamente na matriz.</span>
+        <div class="grid">
+          <div>
+            <div class="muted" style="margin-bottom:6px;">Nome</div>
+            <input type="text" name="nome" placeholder="Ex.: Perturbação do sossego" required>
+          </div>
+          <div>
+            <button class="btn btn-add" type="submit" name="action" value="add">Adicionar</button>
+          </div>
+        </div>
       </form>
     </div>
 
     <div class="card">
-      <h3 style="margin:0 0 10px 0;">Lista</h3>
+      <h3 style="margin:0 0 10px 0;">Lista atual</h3>
       <table>
         <thead>
           <tr>
-            <th style="width:80px">ID</th>
+            <th style="width:80px;">ID</th>
             <th>Nome</th>
-            <th style="width:140px">Usos</th>
-            <th style="width:160px"></th>
+            <th style="width:150px;"></th>
           </tr>
         </thead>
         <tbody>
           {% for q in qualificacoes %}
             <tr>
               <td>{{ q.id }}</td>
-              <td>{{ q.nome }}</td>
-              <td class="muted">{{ q.usos }}</td>
+              <td><strong>{{ q.nome }}</strong></td>
               <td>
-                <form method="post" onsubmit="return confirm('Deletar a qualificação {{ q.nome }}? Isso remove o vínculo dos eventos.');" style="margin:0">
+                <form method="post" onsubmit="return confirm('Deletar esta qualificação? Isso remove também o mapeamento e vínculos com eventos.');">
                   <input type="hidden" name="key" value="{{ key_value }}">
                   <input type="hidden" name="next" value="{{ back_url }}">
-                  <input type="hidden" name="action" value="del">
                   <input type="hidden" name="id" value="{{ q.id }}">
-                  <button class="btn btn-del" type="submit">Deletar</button>
+                  <button class="btn btn-del" type="submit" name="action" value="del">Deletar</button>
                 </form>
               </td>
             </tr>
@@ -2633,43 +2640,27 @@ QUALIFICACOES_UI_TEMPLATE = """
         </tbody>
       </table>
     </div>
-
   </div>
 </body>
 </html>
 """
-_QUAL_UI_TMPL = app.jinja_env.from_string(QUALIFICACOES_UI_TEMPLATE)
 
-def _render_qualificacoes_ui(**ctx):
-    return _QUAL_UI_TMPL.render(**ctx)
+_QUALIFICACOES_TEMPLATE = app.jinja_env.from_string(QUALIFICACOES_UI_TEMPLATE)
 
-def _qualificacoes_com_usos():
-    # retorna lista [{id,nome,usos}] ordenada por id
-    with engine.begin() as conn:
-        rows = conn.execute(text("SELECT id, nome FROM qualificacao_incidente ORDER BY id")).fetchall()
-        usos = {}
-        try:
-            urows = conn.execute(text("SELECT qualificacao_id, COUNT(*) FROM evento_qualificacao GROUP BY qualificacao_id")).fetchall()
-            for r in urows:
-                usos[int(r[0])] = int(r[1])
-        except Exception:
-            pass
-    out = []
-    for r in rows:
-        qid = int(r[0])
-        out.append({"id": qid, "nome": (r[1] or ""), "usos": usos.get(qid, 0)})
-    return out
+def _render_qualificacoes(**ctx):
+    return _QUALIFICACOES_TEMPLATE.render(**ctx)
+
 
 @app.route("/qualificacoes", methods=["GET", "POST"])
 def qualificacoes_ui():
+    # Proteção: exige ADMIN_KEY via ?key=... (GET) ou form-data key (POST) ou header
     if not _admin_ok():
         abort(403)
 
+    back_url = (request.values.get("next") or "/tratamentos").strip()
     key_value = (request.values.get("key") or "").strip()
-    back_url = (request.values.get("next") or url_for("tratamentos_ui", key=key_value, next="/")).strip()
 
-    ok = (request.args.get("ok") or "").strip() == "1"
-    ok_msg = (request.args.get("msg") or "Atualizado com sucesso.").strip()
+    ok = ""
     err = ""
 
     if request.method == "POST":
@@ -2677,56 +2668,38 @@ def qualificacoes_ui():
         if action == "add":
             nome = _trim(request.form.get("nome"))
             if not nome:
-                err = "Informe o nome."
+                err = "Nome inválido."
             else:
                 try:
                     with engine.begin() as conn:
-                        conn.execute(
-                            text("INSERT INTO qualificacao_incidente (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING"),
-                            {"n": nome}
-                        )
-                        _ensure_matriz_para_todas_qualificacoes(conn)
-                    return redirect(url_for("qualificacoes_ui", key=key_value, next=back_url, ok="1", msg="Qualificação adicionada."))
+                        conn.execute(text("INSERT OR IGNORE INTO qualificacao_incidente (nome) VALUES (:n)"), {"n": nome})
+                    ok = "Qualificação adicionada."
                 except Exception as e:
-                    err = str(e)[:500]
-
+                    err = f"Falha ao adicionar: {e}"
         elif action == "del":
-            try:
-                qid = int(request.form.get("id") or 0)
-            except Exception:
-                qid = 0
+            qid = int(request.form.get("id") or 0)
             if qid <= 0:
                 err = "ID inválido."
             else:
                 try:
                     with engine.begin() as conn:
-                        # segurança extra: remove vínculos manualmente (caso FKs/cascade não existam em DB legado)
-                        try:
-                            conn.execute(text("DELETE FROM evento_qualificacao WHERE qualificacao_id=:id"), {"id": qid})
-                        except Exception:
-                            pass
-                        try:
-                            conn.execute(text("DELETE FROM qualificacao_tratamento WHERE qualificacao_id=:id"), {"id": qid})
-                        except Exception:
-                            pass
-
-                        conn.execute(text("DELETE FROM qualificacao_incidente WHERE id=:id"), {"id": qid})
-                        _ensure_matriz_para_todas_qualificacoes(conn)
-                    return redirect(url_for("qualificacoes_ui", key=key_value, next=back_url, ok="1", msg="Qualificação deletada."))
+                        # remove mapeamento e vínculos antes (mesmo que exista ON DELETE CASCADE)
+                        conn.execute(text("DELETE FROM qualificacao_tratamento WHERE qualificacao_id=:q"), {"q": qid})
+                        conn.execute(text("DELETE FROM evento_qualificacao WHERE qualificacao_id=:q"), {"q": qid})
+                        conn.execute(text("DELETE FROM qualificacao_incidente WHERE id=:q"), {"q": qid})
+                    ok = "Qualificação removida."
                 except Exception as e:
-                    err = str(e)[:500]
-        else:
-            err = "Ação inválida."
+                    err = f"Falha ao deletar: {e}"
 
-    # GET
-    return _render_qualificacoes_ui(
+    qualificacoes = _listar_qualificacoes()
+    return _render_qualificacoes(
         key_value=key_value,
         back_url=back_url,
         ok=ok,
-        ok_msg=ok_msg,
         err=err,
-        qualificacoes=_qualificacoes_com_usos(),
+        qualificacoes=qualificacoes,
     )
+
 
 @app.route("/tratamentos", methods=["GET", "POST"])
 def tratamentos_ui():
@@ -2735,9 +2708,8 @@ def tratamentos_ui():
 
     key_value = (request.values.get("key") or "").strip()
     back_url = (request.values.get("next") or "/").strip()
-
-    trat_self_url = url_for("tratamentos_ui", key=key_value, next=back_url)
-    qual_manage_url = url_for("qualificacoes_ui", key=key_value, next=trat_self_url)
+    self_url = url_for("tratamentos_ui", key=key_value, next=back_url)
+    qual_url = url_for("qualificacoes_ui", key=key_value, next=self_url)
     ok = (request.args.get("ok") or "").strip() == "1"
     err = ""
 
@@ -2839,7 +2811,7 @@ def tratamentos_ui():
             return _render_trat_edit(
                 key_value=key_value,
                 back_url=back_url,
-                qual_manage_url=qual_manage_url,
+                qual_url=qual_url,
                 ok=False,
                 err=err,
                 trat_map_json=json.dumps(_listar_tratamento_map(), ensure_ascii=False),
@@ -2859,7 +2831,7 @@ def tratamentos_ui():
     return _render_trat_edit(
         key_value=key_value,
         back_url=back_url,
-                qual_manage_url=qual_manage_url,
+        qual_url=qual_url,
         ok=ok,
         err=err,
         trat_map_json=json.dumps(_listar_tratamento_map(), ensure_ascii=False),
