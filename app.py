@@ -156,7 +156,10 @@ def _seed_qualificacoes():
             if not nm:
                 continue
             # SQLite: INSERT OR IGNORE evita erro de UNIQUE
-            conn.execute(text("INSERT OR IGNORE INTO qualificacao_incidente (nome) VALUES (:n)"), {"n": nm})
+            if engine.dialect.name == "sqlite":
+                conn.execute(text("INSERT OR IGNORE INTO qualificacao_incidente (nome) VALUES (:n)"), {"n": nm})
+            else:
+                conn.execute(text("INSERT INTO qualificacao_incidente (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING"), {"n": nm})
 
 
         # busca existentes
@@ -2672,7 +2675,10 @@ def qualificacoes_ui():
             else:
                 try:
                     with engine.begin() as conn:
-                        conn.execute(text("INSERT OR IGNORE INTO qualificacao_incidente (nome) VALUES (:n)"), {"n": nome})
+                        if engine.dialect.name == "sqlite":
+                            conn.execute(text("INSERT OR IGNORE INTO qualificacao_incidente (nome) VALUES (:n)"), {"n": nome})
+                        else:
+                            conn.execute(text("INSERT INTO qualificacao_incidente (nome) VALUES (:n) ON CONFLICT (nome) DO NOTHING"), {"n": nome})
                     ok = "Qualificação adicionada."
                 except Exception as e:
                     err = f"Falha ao adicionar: {e}"
